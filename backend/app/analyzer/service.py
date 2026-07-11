@@ -410,10 +410,15 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
         ]
     )
 
-    function_names: list[tuple[str, int]] = []
+    function_names: list[tuple[str, int, bool]] = []
 
     for pattern in JS_FUNCTION_PATTERNS:
         for match in pattern.finditer(content):
+            matched_text = match.group(0)
+            is_async = bool(
+                re.search(r"\basync\b", matched_text)
+            )
+
             function_names.append(
                 (
                     match.group(1),
@@ -421,13 +426,14 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
                         content,
                         match.start(),
                     ),
+                    is_async,
                 )
             )
 
     seen_functions: set[str] = set()
     functions: list[dict[str, Any]] = []
 
-    for name, line in function_names:
+    for name, line, is_async in function_names:
         if name in seen_functions:
             continue
 
@@ -438,7 +444,7 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
                 "name": name,
                 "line": line,
                 "end_line": None,
-                "async": False,
+                "async": is_async,
                 "decorators": [],
             }
         )
