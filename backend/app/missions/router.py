@@ -5,6 +5,7 @@ from app.missions.models import (
     MissionResponse,
     MissionStatusUpdate,
     MissionSummaryResponse,
+    MissionTaskUpdate,
 )
 from app.missions.service import (
     MissionError,
@@ -13,6 +14,8 @@ from app.missions.service import (
     get_mission,
     list_missions,
     update_mission_status,
+    update_mission_task,
+    advance_mission,
 )
 
 
@@ -111,3 +114,46 @@ def update_mission_status_endpoint(
             status_code=400,
             detail=str(error),
         ) from error
+
+
+@router.patch(
+    "/{mission_id}/tasks/{task_id}",
+    response_model=MissionResponse,
+)
+def update_mission_task_endpoint(
+    mission_id: int,
+    task_id: int,
+    payload: MissionTaskUpdate,
+) -> MissionResponse:
+    try:
+        return MissionResponse(
+            **update_mission_task(
+                mission_id=mission_id,
+                task_id=task_id,
+                payload=payload,
+            )
+        )
+    except MissionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/advance",
+    response_model=MissionResponse,
+)
+def advance_mission_endpoint(
+    mission_id: int,
+) -> MissionResponse:
+    try:
+        return MissionResponse(
+            **advance_mission(mission_id)
+        )
+    except MissionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+

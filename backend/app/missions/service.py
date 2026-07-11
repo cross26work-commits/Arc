@@ -524,3 +524,377 @@ def update_mission_status(
     )
 
     return get_mission(mission_id)
+
+
+def _get_task_row(
+    *,
+    mission_id: int,
+    task_id: int,
+):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT *
+            FROM mission_tasks
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                task_id,
+                mission_id,
+            ),
+        ).fetchone()
+
+
+def _calculate_mission_progress(
+    mission_id: int,
+) -> int:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT status
+            FROM mission_tasks
+            WHERE mission_id = ?
+            ORDER BY position ASC
+            """,
+            (mission_id,),
+        ).fetchall()
+
+    if not rows:
+        return 0
+
+    completed = sum(
+        1
+        for row in rows
+        if row["status"] in {
+            "COMPLETED",
+            "SKIPPED",
+        }
+    )
+
+    return round(
+        completed / len(rows) * 100
+    )
+
+
+def _next_pending_task(
+    *,
+    mission_id: int,
+    completed_position: int,
+):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT *
+            FROM mission_tasks
+            WHERE mission_id = ?
+              AND position > ?
+              AND status = 'PENDING'
+            ORDER BY position ASC
+            LIMIT 1
+            """,
+            (
+                mission_id,
+                completed_position,
+            ),
+        ).fetchone()
+
+
+def _task_next_action(task_type: str) -> str:
+    mapping = {
+        "REQUIREMENTS": "目的と成功条件を整理する",
+        "ANALYSIS": "対象コードと影響範囲を調査する",
+        "PLANNING": "実装計画を作成する",
+        "APPROVAL": "実行承認を確認する",
+        "IMPLEMENTATION": "承認済みの変更を実装する",
+        "VERIFICATION": "Build・構文確認・テストを実行する",
+        "REPORTING": "完成条件を確認して報告する",
+    }
+
+    return mapping.get(
+        task_type,
+        "次のタスクを実行する",
+    )
+
+
+def _derive_mission_status(
+    *,
+    task_type: str,
+    task_status: str,
+    progress: int,
+) -> str:
+    if progress >= 100:
+        return "COMPLETED"
+
+    if task_status == "FAILED":
+        return "FAILED"
+
+    if task_type == "REQUIREMENTS":
+        return "DRAFT"
+
+    if task_type in {
+        "ANALYSIS",
+        "PLANNING",
+    }:
+        return "PLANNED"
+
+    if task_type == "APPROVAL":
+        return "PLANNED"
+
+    if task_type == "IMPLEMENTATION":
+        return "RUNNING"
+
+    if task_type == "VERIFICATION":
+        return "VERIFYING"
+
+    if task_type == "REPORTING":
+        return "VERIFYING"
+
+    return "DRAFT"
+
+
+def update_mission_task(
+    *,
+    mission_id: int,
+    task_id: int,
+    payload,
+) -> dict[str, Any]:
+    mission = _mission_row(mission_id)
+
+    if mission is None:
+        raise MissionError(
+            "Missionが見つかりません。"
+        )
+
+    task = _get_task_row(
+        mission_id=mission_id,
+        task_id=task_id,
+    )
+
+    if task is None:
+        raise MissionError(
+            "Mission Taskが見つかりません。"
+        )
+
+    if mission["status"] in {
+        "COMPLETED",
+        "CANCELLED",
+    }:
+        raise MissionError(
+            "完了または中止済みMissionは変更できません。"
+        )
+
+    now = _now()
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = ?,
+                result = COALESCE(?, result),
+                target_path = COALESCE(?, target_path),
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                payload.status,
+                (
+                    payload.result.strip()
+                    if payload.result
+                    else None
+                ),
+                (
+                    payload.target_path.strip()
+                    if payload.target_path
+                    else None
+                ),
+                now,
+                task_id,
+                mission_id,
+            ),
+        )
+
+        if payload.status == "RUNNING":
+            connection.execute(
+                """
+                UPDATE mission_tasks
+                SET status = 'PENDING',
+                    updated_at = ?
+                WHERE mission_id = ?
+                  AND status = 'READY'
+                  AND id != ?
+                """,
+                (
+                    now,
+                    mission_id,
+                    task_id,
+                ),
+            )
+
+        if payload.status == "COMPLETED":
+            next_task = _next_pending_task(
+                mission_id=mission_id,
+                completed_position=task["position"],
+            )
+
+            if next_task is not None:
+                connection.execute(
+                    """
+                    UPDATE mission_tasks
+                    SET status = 'READY',
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        next_task["id"],
+                    ),
+                )
+
+        connection.commit()
+
+    progress = _calculate_mission_progress(
+        mission_id
+    )
+
+    current_tasks = _task_rows(mission_id)
+
+    ready_or_running = next(
+        (
+            row
+            for row in current_tasks
+            if row["status"] in {
+                "READY",
+                "RUNNING",
+            }
+        ),
+        None,
+    )
+
+    if progress >= 100:
+        next_action = "完成判定と最終報告を確認する"
+        mission_status = "COMPLETED"
+    elif ready_or_running is not None:
+        next_action = _task_next_action(
+            ready_or_running["task_type"]
+        )
+        mission_status = _derive_mission_status(
+            task_type=ready_or_running["task_type"],
+            task_status=ready_or_running["status"],
+            progress=progress,
+        )
+    else:
+        next_action = "次のタスク状態を確認する"
+        mission_status = _derive_mission_status(
+            task_type=task["task_type"],
+            task_status=payload.status,
+            progress=progress,
+        )
+
+    error_increment = (
+        1
+        if payload.status == "FAILED"
+        else 0
+    )
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = ?,
+                progress = ?,
+                next_action = ?,
+                error_count = error_count + ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                mission_status,
+                progress,
+                next_action,
+                error_increment,
+                now,
+                mission_id,
+            ),
+        )
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level=(
+            "ERROR"
+            if payload.status == "FAILED"
+            else "INFO"
+        ),
+        event_type="TASK_STATUS_CHANGED",
+        message=(
+            f"Task「{task['title']}」を"
+            f"{task['status']}から"
+            f"{payload.status}へ変更しました。"
+        ),
+        metadata={
+            "task_id": task_id,
+            "task_type": task["task_type"],
+            "previous_status": task["status"],
+            "new_status": payload.status,
+            "progress": progress,
+        },
+    )
+
+    return get_mission(mission_id)
+
+
+def advance_mission(
+    mission_id: int,
+) -> dict[str, Any]:
+    mission = _mission_row(mission_id)
+
+    if mission is None:
+        raise MissionError(
+            "Missionが見つかりません。"
+        )
+
+    tasks = _task_rows(mission_id)
+
+    active_task = next(
+        (
+            task
+            for task in tasks
+            if task["status"] in {
+                "READY",
+                "RUNNING",
+            }
+        ),
+        None,
+    )
+
+    if active_task is None:
+        raise MissionError(
+            "進行可能なTaskがありません。"
+        )
+
+    from app.missions.models import MissionTaskUpdate
+
+    if active_task["status"] == "READY":
+        return update_mission_task(
+            mission_id=mission_id,
+            task_id=active_task["id"],
+            payload=MissionTaskUpdate(
+                status="RUNNING",
+            ),
+        )
+
+    return update_mission_task(
+        mission_id=mission_id,
+        task_id=active_task["id"],
+        payload=MissionTaskUpdate(
+            status="COMPLETED",
+            result=(
+                "Task Controller v0.1により"
+                "手動進行処理を完了しました。"
+            ),
+        ),
+    )

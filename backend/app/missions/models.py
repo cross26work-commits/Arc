@@ -97,3 +97,15 @@ class MissionSummaryResponse(BaseModel):
     error_count: int
     created_at: str
     updated_at: str
+
+
+class MissionTaskUpdate(BaseModel):
+    status: TaskStatus
+    result: str | None = Field(
+        default=None,
+        max_length=10000,
+    )
+    target_path: str | None = Field(
+        default=None,
+        max_length=1000,
+    )
