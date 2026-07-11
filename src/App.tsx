@@ -85,6 +85,9 @@ type AnalysisMetric = {
   import_count: number;
   route_count: number;
   component_count: number;
+  hook_count: number;
+  sdk_call_count: number;
+  api_call_count: number;
   todo_count: number;
   warning_count: number;
 };
@@ -125,6 +128,23 @@ type AnalysisApiCall = {
   line: number;
 };
 
+
+type AnalysisSdkCall = {
+  sdk: string;
+  operation: string;
+  line: number;
+};
+
+type AnalysisHook = {
+  name: string;
+  line: number;
+};
+
+type AnalysisNextFeature = {
+  name: string;
+  line: number;
+};
+
 type AnalysisTodo = {
   type: string;
   line: number;
@@ -152,6 +172,9 @@ type FileAnalysis = {
   routes: AnalysisRoute[];
   components: AnalysisComponent[];
   api_calls: AnalysisApiCall[];
+  sdk_calls: AnalysisSdkCall[];
+  hooks: AnalysisHook[];
+  next_features: AnalysisNextFeature[];
   calls: string[];
   dependencies: string[];
   todos: AnalysisTodo[];
@@ -901,6 +924,70 @@ function App() {
                                     <span>{item.method}</span>
                                     <code>{item.url}</code>
                                     <small>{item.client}</small>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.hooks.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              REACT HOOKS
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.hooks.map(
+                                (hook, index) => (
+                                  <div
+                                    className="analysis-item"
+                                    key={`${hook.name}-${hook.line}-${index}`}
+                                  >
+                                    <code>{hook.name}()</code>
+                                    <span>Line {hook.line}</span>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.sdk_calls.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              SDK CALLS
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.sdk_calls.map(
+                                (item, index) => (
+                                  <div
+                                    className="analysis-route"
+                                    key={`${item.sdk}-${item.operation}-${index}`}
+                                  >
+                                    <span>{item.sdk}</span>
+                                    <code>{item.operation}</code>
+                                    <small>Line {item.line}</small>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.next_features.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              NEXT.JS
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.next_features.map(
+                                (item, index) => (
+                                  <div
+                                    className="analysis-item"
+                                    key={`${item.name}-${item.line}-${index}`}
+                                  >
+                                    <code>{item.name}()</code>
+                                    <span>Line {item.line}</span>
                                   </div>
                                 )
                               )}

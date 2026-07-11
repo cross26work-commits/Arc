@@ -84,6 +84,48 @@ EXPRESS_ROUTE_PATTERN = re.compile(
 )
 
 
+REACT_HOOK_PATTERN = re.compile(
+    r"\b("
+    r"useState|useEffect|useMemo|useCallback|useRef|"
+    r"useReducer|useContext|useLayoutEffect|useTransition|"
+    r"useDeferredValue|useId|useImperativeHandle"
+    r")\s*\("
+)
+
+SUPABASE_CALL_PATTERN = re.compile(
+    r"""
+    \bsupabase\.
+    (
+        auth\.[A-Za-z_$][\w$]* |
+        from\s*\([^)]*\)(?:\.[A-Za-z_$][\w$]*)* |
+        rpc |
+        storage\.[A-Za-z_$][\w$]* |
+        channel
+    )
+    \s*\(
+    """,
+    re.VERBOSE,
+)
+
+GENERIC_SDK_CALL_PATTERN = re.compile(
+    r"""
+    \b(
+        createClient |
+        initializeApp |
+        getAuth |
+        getFirestore |
+        PrismaClient
+    )
+    \s*\(
+    """,
+    re.VERBOSE,
+)
+
+NEXT_ROUTER_PATTERN = re.compile(
+    r"\b(useRouter|usePathname|useSearchParams|redirect|notFound)\s*\("
+)
+
+
 def _unique_strings(values: list[str]) -> list[str]:
     seen: set[str] = set()
     results: list[str] = []
@@ -339,10 +381,33 @@ def _line_number_for_match(content: str, start_index: int) -> int:
     return content.count("\n", 0, start_index) + 1
 
 
+def _extract_fetch_method(
+    content: str,
+    match_end: int,
+) -> str:
+    following = content[match_end:match_end + 700]
+
+    method_match = re.search(
+        r"""
+        \bmethod\s*:\s*
+        ["'](GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)["']
+        """,
+        following,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    if method_match:
+        return method_match.group(1).upper()
+
+    return "GET"
+
+
 def _analyze_javascript(content: str) -> dict[str, Any]:
     imports = _unique_strings(
-        match.group(1)
-        for match in JS_IMPORT_PATTERN.finditer(content)
+        [
+            match.group(1)
+            for match in JS_IMPORT_PATTERN.finditer(content)
+        ]
     )
 
     function_names: list[tuple[str, int]] = []
@@ -352,7 +417,10 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
             function_names.append(
                 (
                     match.group(1),
-                    _line_number_for_match(content, match.start()),
+                    _line_number_for_match(
+                        content,
+                        match.start(),
+                    ),
                 )
             )
 
@@ -364,6 +432,7 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
             continue
 
         seen_functions.add(name)
+
         functions.append(
             {
                 "name": name,
@@ -377,17 +446,30 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
     classes = [
         {
             "name": match.group(1),
-            "line": _line_number_for_match(content, match.start()),
+            "line": _line_number_for_match(
+                content,
+                match.start(),
+            ),
             "end_line": None,
             "bases": [],
         }
         for match in JS_CLASS_PATTERN.finditer(content)
     ]
 
-    component_names = _unique_strings(
-        match.group(1)
-        for match in REACT_COMPONENT_PATTERN.finditer(content)
-    )
+    component_names: list[str] = []
+
+    for match in REACT_COMPONENT_PATTERN.finditer(content):
+        name = match.group(1)
+
+        if not name:
+            continue
+
+        if name.isupper():
+            continue
+
+        component_names.append(name)
+
+    component_names = _unique_strings(component_names)
 
     components = [
         {
@@ -406,7 +488,10 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
                 "method": match.group(1).upper(),
                 "path": match.group(2),
                 "handler": "",
-                "line": _line_number_for_match(content, match.start()),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
                 "decorator": "",
             }
         )
@@ -417,9 +502,15 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
         api_calls.append(
             {
                 "client": "fetch",
-                "method": "UNKNOWN",
+                "method": _extract_fetch_method(
+                    content,
+                    match.end(),
+                ),
                 "url": match.group(1),
-                "line": _line_number_for_match(content, match.start()),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
             }
         )
 
@@ -429,7 +520,68 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
                 "client": "axios",
                 "method": match.group(1).upper(),
                 "url": match.group(2),
-                "line": _line_number_for_match(content, match.start()),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
+            }
+        )
+
+    sdk_calls: list[dict[str, Any]] = []
+
+    for match in SUPABASE_CALL_PATTERN.finditer(content):
+        operation = re.sub(
+            r"\s+",
+            "",
+            match.group(1),
+        )
+
+        sdk_calls.append(
+            {
+                "sdk": "supabase",
+                "operation": operation,
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
+            }
+        )
+
+    for match in GENERIC_SDK_CALL_PATTERN.finditer(content):
+        sdk_calls.append(
+            {
+                "sdk": "external-sdk",
+                "operation": match.group(1),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
+            }
+        )
+
+    hooks: list[dict[str, Any]] = []
+
+    for match in REACT_HOOK_PATTERN.finditer(content):
+        hooks.append(
+            {
+                "name": match.group(1),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
+            }
+        )
+
+    next_features: list[dict[str, Any]] = []
+
+    for match in NEXT_ROUTER_PATTERN.finditer(content):
+        next_features.append(
+            {
+                "name": match.group(1),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
             }
         )
 
@@ -441,6 +593,9 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
         "components": components,
         "calls": [],
         "api_calls": api_calls,
+        "sdk_calls": sdk_calls,
+        "hooks": hooks,
+        "next_features": next_features,
         "parse_error": None,
     }
 
@@ -452,20 +607,60 @@ def _infer_role(
     components: list[dict[str, Any]],
     classes: list[dict[str, Any]],
 ) -> str:
-    path = relative_path.lower()
-    stem = Path(relative_path).stem.replace("_", " ").replace("-", " ")
+    normalized_path = relative_path.replace("\\", "/")
+    path = normalized_path.lower()
+    file_name = Path(normalized_path).name.lower()
+    stem = Path(normalized_path).stem.replace("_", " ").replace("-", " ")
+
+    if file_name == "page.tsx":
+        route_path = normalized_path.split("/app/", 1)[-1]
+        route_path = route_path.rsplit("/page.tsx", 1)[0]
+        route_path = re.sub(r"/\([^/]+\)", "", route_path)
+        route_path = route_path or "/"
+
+        return f"Next.js画面ルート {route_path}"
+
+    if file_name == "layout.tsx":
+        return "Next.jsレイアウト定義"
+
+    if file_name == "loading.tsx":
+        return "Next.jsローディング画面"
+
+    if file_name == "error.tsx":
+        return "Next.jsエラー画面"
+
+    if file_name == "not-found.tsx":
+        return "Next.js Not Found画面"
+
+    if file_name == "route.ts":
+        return "Next.js Route Handler"
+
+    if file_name == "middleware.ts":
+        return "Next.js Middleware"
+
+    if path.endswith("/lib/api.ts") or path.endswith("/api.ts"):
+        return "HTTP API Client"
+
+    if "/services/" in path or path.endswith("service.ts") or path.endswith("service.py"):
+        return f"{stem}に関するビジネスロジック"
+
+    if "supabase/client" in path:
+        return "Supabase Client初期化"
 
     if routes:
         return f"{stem}に関するAPIルート定義"
+
+    if "/providers/" in path:
+        return f"{stem}に関するReact Provider"
+
+    if "/hooks/" in path:
+        return f"{stem}に関するReact Hook"
 
     if components:
         return f"{stem}に関するReact UIコンポーネント"
 
     if "/models" in path or path.endswith("models.py"):
         return f"{stem}に関するデータモデル定義"
-
-    if "/services" in path or path.endswith("service.py"):
-        return f"{stem}に関するビジネスロジック"
 
     if "/repositories" in path or "repository" in path:
         return f"{stem}に関するデータアクセス処理"
@@ -476,8 +671,8 @@ def _infer_role(
     if "/components/" in path:
         return f"{stem}に関するUIコンポーネント"
 
-    if "/app/" in path and language.startswith("typescript"):
-        return f"{stem}に関する画面またはルート"
+    if "/lib/" in path:
+        return f"{stem}に関する共通ライブラリ"
 
     if classes:
         return f"{stem}に関するクラス定義"
@@ -548,6 +743,9 @@ def analyze_project_file(
             "components": [],
             "calls": [],
             "api_calls": [],
+            "sdk_calls": [],
+            "hooks": [],
+            "next_features": [],
             "parse_error": None,
         }
 
@@ -582,6 +780,9 @@ def analyze_project_file(
         "import_count": len(imports),
         "route_count": len(routes),
         "component_count": len(components),
+        "hook_count": len(details.get("hooks", [])),
+        "sdk_call_count": len(details.get("sdk_calls", [])),
+        "api_call_count": len(details.get("api_calls", [])),
         "todo_count": len(todos),
         "warning_count": len(warnings),
     }
@@ -598,6 +799,9 @@ def analyze_project_file(
         "routes": routes,
         "components": components,
         "api_calls": details.get("api_calls", []),
+        "sdk_calls": details.get("sdk_calls", []),
+        "hooks": details.get("hooks", []),
+        "next_features": details.get("next_features", []),
         "calls": details.get("calls", [])[:200],
         "dependencies": _dependency_candidates(
             imports=imports,
@@ -606,5 +810,5 @@ def analyze_project_file(
         "todos": todos,
         "warnings": warnings,
         "truncated": file_data["truncated"],
-        "analysis_engine": "arc-static-analyzer-v0.1",
+        "analysis_engine": "arc-static-analyzer-v0.2",
     }
