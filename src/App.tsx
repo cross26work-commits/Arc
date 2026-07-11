@@ -183,6 +183,57 @@ type FileAnalysis = {
   analysis_engine: string;
 };
 
+
+type DependencyRisk = {
+  level: "low" | "medium" | "high";
+  label: string;
+  score: number;
+  reason: string;
+};
+
+type DependencyAffectedFile = {
+  path: string;
+  depth: number;
+};
+
+type DependencyTreeNode = {
+  path: string;
+  name: string;
+  depth: number;
+  children: DependencyTreeNode[];
+  cycle: boolean;
+  truncated: boolean;
+};
+
+type DependencyTreePayload = {
+  tree: DependencyTreeNode;
+  node_count: number;
+  max_depth: number;
+  max_nodes: number;
+};
+
+type DependencyTreeResponse = {
+  project_id: number;
+  project_name: string;
+  target: string;
+  direction: string;
+  summary: {
+    file_count: number;
+    edge_count: number;
+    direct_dependency_count: number;
+    direct_dependent_count: number;
+    affected_count: number;
+    unresolved_internal_imports: number;
+  };
+  direct_dependencies: string[];
+  direct_dependents: string[];
+  affected_files: DependencyAffectedFile[];
+  risk: DependencyRisk;
+  dependency_tree?: DependencyTreePayload;
+  dependent_tree?: DependencyTreePayload;
+  analysis_engine: string;
+};
+
 function App() {
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState(
@@ -210,6 +261,10 @@ function App() {
     useState<FileAnalysis | null>(null);
   const [analysisMessage, setAnalysisMessage] = useState("");
   const [isAnalysisLoading, setIsAnalysisLoading] = useState(false);
+  const [dependencyData, setDependencyData] =
+    useState<DependencyTreeResponse | null>(null);
+  const [dependencyMessage, setDependencyMessage] = useState("");
+  const [isDependencyLoading, setIsDependencyLoading] = useState(false);
   const activeProject = projects[0] ?? null;
 
   useEffect(() => {
@@ -301,9 +356,12 @@ function App() {
 
     setIsFileLoading(true);
     setIsAnalysisLoading(true);
+    setIsDependencyLoading(true);
     setFileMessage("ファイルを読み込んでいます。");
     setAnalysisMessage("静的解析を実行しています。");
+    setDependencyMessage("依存関係を解析しています。");
     setFileAnalysis(null);
+    setDependencyData(null);
     setOpenedLine(lineNumber);
 
     try {
@@ -346,6 +404,43 @@ function App() {
 
         setFileAnalysis(analysisData);
         setAnalysisMessage("");
+
+        try {
+          const dependencyParams = new URLSearchParams({
+            path: relativePath,
+            direction: "both",
+            max_depth: "5",
+            max_nodes: "300",
+          });
+
+          const dependencyResponse = await fetch(
+            `http://127.0.0.1:8765/projects/${activeProject.id}/dependencies/tree?${dependencyParams}`
+          );
+
+          if (!dependencyResponse.ok) {
+            const dependencyError = await dependencyResponse
+              .json()
+              .catch(() => null);
+
+            throw new Error(
+              dependencyError?.detail ??
+                `HTTP ${dependencyResponse.status}`
+            );
+          }
+
+          const dependencyResult: DependencyTreeResponse =
+            await dependencyResponse.json();
+
+          setDependencyData(dependencyResult);
+          setDependencyMessage("");
+        } catch (dependencyError) {
+          setDependencyData(null);
+          setDependencyMessage(
+            dependencyError instanceof Error
+              ? dependencyError.message
+              : "依存関係解析に失敗しました。"
+          );
+        }
       } catch (analysisError) {
         setFileAnalysis(null);
         setAnalysisMessage(
@@ -366,6 +461,7 @@ function App() {
     } finally {
       setIsFileLoading(false);
       setIsAnalysisLoading(false);
+      setIsDependencyLoading(false);
     }
   };
 
@@ -665,6 +761,9 @@ function App() {
                       setFileAnalysis(null);
                       setAnalysisMessage("");
                       setIsAnalysisLoading(false);
+                      setDependencyData(null);
+                      setDependencyMessage("");
+                      setIsDependencyLoading(false);
                     }}
                   >
                     閉じる
@@ -1061,6 +1160,181 @@ function App() {
                             </div>
                           </section>
                         )}
+
+                        <section className="analysis-block">
+                          <span className="analysis-label">
+                            CHANGE IMPACT
+                          </span>
+
+                          {isDependencyLoading && (
+                            <p className="analysis-state">
+                              依存関係を解析中...
+                            </p>
+                          )}
+
+                          {dependencyMessage && (
+                            <p className="analysis-state error">
+                              {dependencyMessage}
+                            </p>
+                          )}
+
+                          {dependencyData &&
+                            !isDependencyLoading && (
+                              <div className="dependency-impact">
+                                <div
+                                  className={`dependency-risk ${dependencyData.risk.level}`}
+                                >
+                                  <div>
+                                    <span>変更リスク</span>
+                                    <strong>
+                                      {dependencyData.risk.label}
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span>スコア</span>
+                                    <strong>
+                                      {dependencyData.risk.score}
+                                    </strong>
+                                  </div>
+                                  <p>
+                                    {dependencyData.risk.reason}
+                                  </p>
+                                </div>
+
+                                <div className="dependency-metrics">
+                                  <div>
+                                    <span>直接依存</span>
+                                    <strong>
+                                      {
+                                        dependencyData.summary
+                                          .direct_dependency_count
+                                      }
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span>直接利用元</span>
+                                    <strong>
+                                      {
+                                        dependencyData.summary
+                                          .direct_dependent_count
+                                      }
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span>影響候補</span>
+                                    <strong>
+                                      {
+                                        dependencyData.summary
+                                          .affected_count
+                                      }
+                                    </strong>
+                                  </div>
+                                </div>
+
+                                {dependencyData
+                                  .direct_dependencies.length > 0 && (
+                                  <details className="dependency-details">
+                                    <summary>
+                                      依存ファイル
+                                      <span>
+                                        {
+                                          dependencyData
+                                            .direct_dependencies
+                                            .length
+                                        }
+                                      </span>
+                                    </summary>
+                                    <div className="dependency-file-list">
+                                      {dependencyData
+                                        .direct_dependencies
+                                        .map((item) => (
+                                          <code key={item}>
+                                            {item}
+                                          </code>
+                                        ))}
+                                    </div>
+                                  </details>
+                                )}
+
+                                {dependencyData
+                                  .direct_dependents.length > 0 && (
+                                  <details className="dependency-details">
+                                    <summary>
+                                      このファイルの利用元
+                                      <span>
+                                        {
+                                          dependencyData
+                                            .direct_dependents
+                                            .length
+                                        }
+                                      </span>
+                                    </summary>
+                                    <div className="dependency-file-list">
+                                      {dependencyData
+                                        .direct_dependents
+                                        .map((item) => (
+                                          <code key={item}>
+                                            {item}
+                                          </code>
+                                        ))}
+                                    </div>
+                                  </details>
+                                )}
+
+                                {dependencyData.affected_files.length >
+                                  0 && (
+                                  <details className="dependency-details">
+                                    <summary>
+                                      影響候補
+                                      <span>
+                                        {
+                                          dependencyData
+                                            .affected_files.length
+                                        }
+                                      </span>
+                                    </summary>
+                                    <div className="dependency-file-list">
+                                      {dependencyData
+                                        .affected_files
+                                        .map((item) => (
+                                          <code key={item.path}>
+                                            Depth {item.depth} —{" "}
+                                            {item.path}
+                                          </code>
+                                        ))}
+                                    </div>
+                                  </details>
+                                )}
+
+                                {dependencyData.dependency_tree && (
+                                  <details className="dependency-details">
+                                    <summary>
+                                      依存ツリー概要
+                                      <span>
+                                        {
+                                          dependencyData
+                                            .dependency_tree.node_count
+                                        }
+                                      </span>
+                                    </summary>
+                                    <p className="dependency-tree-note">
+                                      最大深度{" "}
+                                      {
+                                        dependencyData
+                                          .dependency_tree.max_depth
+                                      }
+                                      、解析ノード{" "}
+                                      {
+                                        dependencyData
+                                          .dependency_tree.node_count
+                                      }
+                                      件
+                                    </p>
+                                  </details>
+                                )}
+                              </div>
+                            )}
+                        </section>
 
                         {fileAnalysis.todos.length === 0 &&
                           fileAnalysis.warnings.length === 0 && (
