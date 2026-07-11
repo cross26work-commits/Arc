@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.database import initialize_database
+from app.projects.router import router as projects_router
+
 
 app = FastAPI(
     title="Arc Core",
@@ -15,11 +18,19 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:1420",
         "http://127.0.0.1:1420",
+        "tauri://localhost",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(projects_router)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    initialize_database()
 
 
 @app.get("/health")
