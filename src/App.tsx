@@ -77,6 +77,89 @@ type FileContent = {
   truncated: boolean;
 };
 
+type AnalysisMetric = {
+  line_count: number;
+  size_bytes: number;
+  function_count: number;
+  class_count: number;
+  import_count: number;
+  route_count: number;
+  component_count: number;
+  todo_count: number;
+  warning_count: number;
+};
+
+type AnalysisFunction = {
+  name: string;
+  line: number;
+  end_line: number | null;
+  async: boolean;
+  decorators: string[];
+};
+
+type AnalysisClass = {
+  name: string;
+  line: number;
+  end_line: number | null;
+  bases: string[];
+};
+
+type AnalysisRoute = {
+  framework: string;
+  method: string;
+  path: string;
+  handler: string;
+  line: number;
+  decorator: string;
+};
+
+type AnalysisComponent = {
+  name: string;
+  type: string;
+};
+
+type AnalysisApiCall = {
+  client: string;
+  method: string;
+  url: string;
+  line: number;
+};
+
+type AnalysisTodo = {
+  type: string;
+  line: number;
+  message: string;
+  preview: string;
+};
+
+type AnalysisWarning = {
+  level: string;
+  code: string;
+  message: string;
+};
+
+type FileAnalysis = {
+  project_id: number;
+  project_name: string;
+  relative_path: string;
+  language: string;
+  summary: string;
+  role: string;
+  metrics: AnalysisMetric;
+  imports: string[];
+  functions: AnalysisFunction[];
+  classes: AnalysisClass[];
+  routes: AnalysisRoute[];
+  components: AnalysisComponent[];
+  api_calls: AnalysisApiCall[];
+  calls: string[];
+  dependencies: string[];
+  todos: AnalysisTodo[];
+  warnings: AnalysisWarning[];
+  truncated: boolean;
+  analysis_engine: string;
+};
+
 function App() {
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState(
@@ -100,6 +183,10 @@ function App() {
   const [openedLine, setOpenedLine] = useState<number | null>(null);
   const [fileMessage, setFileMessage] = useState("");
   const [isFileLoading, setIsFileLoading] = useState(false);
+  const [fileAnalysis, setFileAnalysis] =
+    useState<FileAnalysis | null>(null);
+  const [analysisMessage, setAnalysisMessage] = useState("");
+  const [isAnalysisLoading, setIsAnalysisLoading] = useState(false);
   const activeProject = projects[0] ?? null;
 
   useEffect(() => {
@@ -190,7 +277,10 @@ function App() {
     }
 
     setIsFileLoading(true);
+    setIsAnalysisLoading(true);
     setFileMessage("ファイルを読み込んでいます。");
+    setAnalysisMessage("静的解析を実行しています。");
+    setFileAnalysis(null);
     setOpenedLine(lineNumber);
 
     try {
@@ -211,8 +301,40 @@ function App() {
 
       setOpenedFile(data);
       setFileMessage("");
+
+      try {
+        const analysisResponse = await fetch(
+          `http://127.0.0.1:8765/projects/${activeProject.id}/file/analyze?${params}`
+        );
+
+        if (!analysisResponse.ok) {
+          const analysisError = await analysisResponse
+            .json()
+            .catch(() => null);
+
+          throw new Error(
+            analysisError?.detail ??
+              `HTTP ${analysisResponse.status}`
+          );
+        }
+
+        const analysisData: FileAnalysis =
+          await analysisResponse.json();
+
+        setFileAnalysis(analysisData);
+        setAnalysisMessage("");
+      } catch (analysisError) {
+        setFileAnalysis(null);
+        setAnalysisMessage(
+          analysisError instanceof Error
+            ? analysisError.message
+            : "ファイル解析に失敗しました。"
+        );
+      }
     } catch (error) {
       setOpenedFile(null);
+      setFileAnalysis(null);
+      setAnalysisMessage("");
       setFileMessage(
         error instanceof Error
           ? error.message
@@ -220,6 +342,7 @@ function App() {
       );
     } finally {
       setIsFileLoading(false);
+      setIsAnalysisLoading(false);
     }
   };
 
@@ -516,6 +639,9 @@ function App() {
                       setOpenedFile(null);
                       setOpenedLine(null);
                       setFileMessage("");
+                      setFileAnalysis(null);
+                      setAnalysisMessage("");
+                      setIsAnalysisLoading(false);
                     }}
                   >
                     閉じる
@@ -546,24 +672,319 @@ function App() {
                   </p>
                 )}
 
-                <div className="code-viewer">
-                  {openedFile.content.split("\n").map((line, index) => {
-                    const lineNumber = index + 1;
-                    const isHighlighted = lineNumber === openedLine;
-
-                    return (
-                      <div
-                        className={`code-line ${
-                          isHighlighted ? "highlighted" : ""
-                        }`}
-                        key={lineNumber}
-                        id={`code-line-${lineNumber}`}
-                      >
-                        <span className="line-number">{lineNumber}</span>
-                        <code>{line || " "}</code>
+                <div className="file-workspace">
+                  <div className="code-pane">
+                    <div className="pane-heading">
+                      <div>
+                        <span className="pane-label">SOURCE CODE</span>
+                        <strong>コード</strong>
                       </div>
-                    );
-                  })}
+                      <span>
+                        {openedFile.line_count.toLocaleString()}行
+                      </span>
+                    </div>
+
+                    <div className="code-viewer">
+                      {openedFile.content
+                        .split("\n")
+                        .map((line, index) => {
+                          const lineNumber = index + 1;
+                          const isHighlighted =
+                            lineNumber === openedLine;
+
+                          return (
+                            <div
+                              className={`code-line ${
+                                isHighlighted
+                                  ? "highlighted"
+                                  : ""
+                              }`}
+                              key={lineNumber}
+                              id={`code-line-${lineNumber}`}
+                            >
+                              <span className="line-number">
+                                {lineNumber}
+                              </span>
+                              <code>{line || " "}</code>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  <aside className="analysis-pane">
+                    <div className="pane-heading">
+                      <div>
+                        <span className="pane-label">
+                          FILE ANALYSIS
+                        </span>
+                        <strong>静的解析</strong>
+                      </div>
+
+                      {fileAnalysis && (
+                        <span>{fileAnalysis.analysis_engine}</span>
+                      )}
+                    </div>
+
+                    {isAnalysisLoading && (
+                      <p className="analysis-state">
+                        解析中...
+                      </p>
+                    )}
+
+                    {analysisMessage && (
+                      <p className="analysis-state error">
+                        {analysisMessage}
+                      </p>
+                    )}
+
+                    {fileAnalysis && !isAnalysisLoading && (
+                      <div className="analysis-content">
+                        <section className="analysis-block">
+                          <span className="analysis-label">
+                            ROLE
+                          </span>
+                          <p className="analysis-summary">
+                            {fileAnalysis.role}
+                          </p>
+                        </section>
+
+                        <section className="analysis-metrics">
+                          <div>
+                            <span>行数</span>
+                            <strong>
+                              {fileAnalysis.metrics.line_count}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>関数</span>
+                            <strong>
+                              {fileAnalysis.metrics.function_count}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>クラス</span>
+                            <strong>
+                              {fileAnalysis.metrics.class_count}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>API</span>
+                            <strong>
+                              {fileAnalysis.metrics.route_count}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>TODO</span>
+                            <strong>
+                              {fileAnalysis.metrics.todo_count}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>警告</span>
+                            <strong>
+                              {fileAnalysis.metrics.warning_count}
+                            </strong>
+                          </div>
+                        </section>
+
+                        {fileAnalysis.routes.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              API ROUTES
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.routes.map(
+                                (route, index) => (
+                                  <div
+                                    className="analysis-route"
+                                    key={`${route.method}-${route.path}-${index}`}
+                                  >
+                                    <span>{route.method}</span>
+                                    <code>{route.path}</code>
+                                    <small>
+                                      {route.handler}
+                                    </small>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.functions.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              FUNCTIONS
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.functions.map(
+                                (item) => (
+                                  <div
+                                    className="analysis-item"
+                                    key={`${item.name}-${item.line}`}
+                                  >
+                                    <code>{item.name}()</code>
+                                    <span>Line {item.line}</span>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.classes.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              CLASSES
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.classes.map(
+                                (item) => (
+                                  <div
+                                    className="analysis-item"
+                                    key={`${item.name}-${item.line}`}
+                                  >
+                                    <code>{item.name}</code>
+                                    <span>Line {item.line}</span>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.components.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              COMPONENTS
+                            </span>
+                            <div className="analysis-tags">
+                              {fileAnalysis.components.map(
+                                (component) => (
+                                  <span key={component.name}>
+                                    {component.name}
+                                  </span>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.imports.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              IMPORTS
+                            </span>
+                            <div className="analysis-code-list">
+                              {fileAnalysis.imports.map(
+                                (item) => (
+                                  <code key={item}>{item}</code>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.api_calls.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              API CALLS
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.api_calls.map(
+                                (item, index) => (
+                                  <div
+                                    className="analysis-route"
+                                    key={`${item.client}-${item.url}-${index}`}
+                                  >
+                                    <span>{item.method}</span>
+                                    <code>{item.url}</code>
+                                    <small>{item.client}</small>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.dependencies.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              DEPENDENCIES
+                            </span>
+                            <div className="analysis-code-list">
+                              {fileAnalysis.dependencies.map(
+                                (item) => (
+                                  <code key={item}>{item}</code>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.todos.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              TODO / FIXME
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.todos.map(
+                                (item, index) => (
+                                  <div
+                                    className="analysis-warning-item"
+                                    key={`${item.type}-${item.line}-${index}`}
+                                  >
+                                    <strong>
+                                      {item.type}
+                                    </strong>
+                                    <span>
+                                      Line {item.line}
+                                    </span>
+                                    <p>
+                                      {item.message ||
+                                        item.preview}
+                                    </p>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.warnings.length > 0 && (
+                          <section className="analysis-block">
+                            <span className="analysis-label">
+                              WARNINGS
+                            </span>
+                            <div className="analysis-list">
+                              {fileAnalysis.warnings.map(
+                                (warning) => (
+                                  <div
+                                    className={`analysis-warning-item ${warning.level}`}
+                                    key={warning.code}
+                                  >
+                                    <strong>
+                                      {warning.code}
+                                    </strong>
+                                    <p>{warning.message}</p>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {fileAnalysis.todos.length === 0 &&
+                          fileAnalysis.warnings.length === 0 && (
+                            <div className="analysis-clean">
+                              <span>✓</span>
+                              静的解析上の警告はありません。
+                            </div>
+                          )}
+                      </div>
+                    )}
+                  </aside>
                 </div>
               </>
             )}
