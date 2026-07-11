@@ -8,6 +8,7 @@ from app.projects.router import router as projects_router
 from app.indexer.router import router as indexer_router
 from app.analyzer.router import router as analyzer_router
 from app.dependencies.router import router as dependencies_router
+from app.missions.router import router as missions_router
 
 
 app = FastAPI(
@@ -32,6 +33,7 @@ app.include_router(projects_router)
 app.include_router(indexer_router)
 app.include_router(analyzer_router)
 app.include_router(dependencies_router)
+app.include_router(missions_router)
 
 
 @app.on_event("startup")

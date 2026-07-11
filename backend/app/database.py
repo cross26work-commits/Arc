@@ -95,4 +95,90 @@ def initialize_database() -> None:
             """
         )
 
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS missions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'DRAFT',
+                progress INTEGER NOT NULL DEFAULT 0,
+                success_criteria TEXT NOT NULL,
+                next_action TEXT NOT NULL,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+
+                FOREIGN KEY (project_id)
+                    REFERENCES projects(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mission_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                target_path TEXT,
+                result TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+
+                FOREIGN KEY (mission_id)
+                    REFERENCES missions(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mission_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER NOT NULL,
+                level TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                metadata TEXT,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (mission_id)
+                    REFERENCES missions(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_missions_project_status
+            ON missions(project_id, status)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_mission_tasks_mission
+            ON mission_tasks(mission_id, position)
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_mission_logs_mission
+            ON mission_logs(mission_id, id)
+            """
+        )
+
         connection.commit()
