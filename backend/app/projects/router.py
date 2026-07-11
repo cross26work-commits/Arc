@@ -8,8 +8,13 @@ from app.projects.models import (
     ProjectCreate,
     ProjectResponse,
     ProjectTreeResponse,
+    FileContentResponse,
 )
-from app.projects.reader import ProjectReadError, build_project_tree
+from app.projects.reader import (
+    ProjectReadError,
+    build_project_tree,
+    read_project_file,
+)
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -170,4 +175,39 @@ def get_project_tree(
         project_id=project["id"],
         project_name=project["name"],
         **tree,
+    )
+
+
+
+@router.get(
+    "/{project_id}/file",
+    response_model=FileContentResponse,
+)
+def get_project_file(
+    project_id: int,
+    path: str = Query(min_length=1, max_length=1000),
+) -> FileContentResponse:
+    project = _get_project_row(project_id)
+
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail="プロジェクトが見つかりません。",
+        )
+
+    try:
+        file_data = read_project_file(
+            project_path=project["path"],
+            relative_path=path,
+        )
+    except ProjectReadError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+    return FileContentResponse(
+        project_id=project["id"],
+        project_name=project["name"],
+        **file_data,
     )
