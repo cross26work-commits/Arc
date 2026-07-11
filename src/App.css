@@ -555,3 +555,131 @@ button {
     flex-direction: column;
   }
 }
+
+.code-search-section {
+  margin-bottom: 18px;
+}
+
+.code-search-card {
+  padding: 22px;
+}
+
+.search-summary {
+  padding: 5px 9px;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #93c5fd;
+  font-size: 10px;
+}
+
+.code-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.code-search-form input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.16);
+  border-radius: 11px;
+  outline: none;
+  background: rgba(4, 12, 26, 0.75);
+  color: #f8fafc;
+  font-size: 12px;
+}
+
+.code-search-form input::placeholder {
+  color: #475569;
+}
+
+.code-search-form input:focus {
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.code-search-form button {
+  padding: 0 17px;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 11px;
+  background: rgba(37, 99, 235, 0.16);
+  color: #dbeafe;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.code-search-form button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.search-message {
+  margin: 12px 0 0;
+  color: #64748b;
+  font-size: 10px;
+}
+
+.search-results {
+  display: flex;
+  max-height: 330px;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 15px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  padding: 12px 13px;
+  border: 1px solid rgba(148, 163, 184, 0.09);
+  border-radius: 11px;
+  background: rgba(4, 12, 26, 0.5);
+}
+
+.search-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.search-result-header strong {
+  overflow: hidden;
+  color: #bfdbfe;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-header span {
+  flex: 0 0 auto;
+  color: #475569;
+  font-size: 9px;
+}
+
+.search-result-item code {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  color: #94a3b8;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-details {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 760px) {
+  .code-search-form {
+    grid-template-columns: 1fr;
+  }
+
+  .code-search-form button {
+    min-height: 42px;
+  }
+}

@@ -39,6 +39,33 @@ type Project = {
   updated_at: string;
 };
 
+type SearchResult = {
+  path: string;
+  line_number: number | null;
+  preview: string;
+  match_type: "content" | "path";
+};
+
+type SearchResponse = {
+  project_id: number;
+  project_name: string;
+  query: string;
+  count: number;
+  results: SearchResult[];
+};
+
+type IndexSummary = {
+  project_id: number;
+  project_name: string;
+  file_count: number;
+  total_lines: number;
+  total_bytes: number;
+  symbol_count: number;
+  last_indexed_at: string | null;
+  languages: Record<string, number>;
+  symbol_types: Record<string, number>;
+};
+
 function App() {
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState(
@@ -51,6 +78,13 @@ function App() {
   });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectError, setProjectError] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchMessage, setSearchMessage] = useState(
+    "検索語を入力すると、Profit Radar内の関連コードを表示します。"
+  );
+  const [isSearching, setIsSearching] = useState(false);
+  const [indexSummary, setIndexSummary] = useState<IndexSummary | null>(null);
   const activeProject = projects[0] ?? null;
 
   useEffect(() => {
@@ -103,11 +137,85 @@ function App() {
 
     const projectTimer = window.setInterval(loadProjects, 5000);
 
+    const loadIndexSummary = async () => {
+      try {
+        const response = await fetch(
+          "http://127.0.0.1:8765/projects/1/index/summary"
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data: IndexSummary = await response.json();
+        setIndexSummary(data);
+      } catch {
+        setIndexSummary(null);
+      }
+    };
+
+    loadIndexSummary();
+
+    const indexTimer = window.setInterval(loadIndexSummary, 10000);
+
     return () => {
       window.clearInterval(timer);
       window.clearInterval(projectTimer);
+      window.clearInterval(indexTimer);
     };
   }, []);
+
+  const handleCodeSearch = async (
+    event: React.FormEvent<HTMLFormElement>
+  ) => {
+    event.preventDefault();
+
+    const query = searchQuery.trim();
+
+    if (!query) {
+      setSearchMessage("検索語を入力してください。");
+      setSearchResults([]);
+      return;
+    }
+
+    if (!activeProject) {
+      setSearchMessage("検索対象のプロジェクトが登録されていません。");
+      setSearchResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+    setSearchMessage("コードを検索しています。");
+
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        limit: "30",
+      });
+
+      const response = await fetch(
+        `http://127.0.0.1:8765/projects/${activeProject.id}/search?${params}`
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data: SearchResponse = await response.json();
+
+      setSearchResults(data.results);
+      setSearchMessage(
+        data.count > 0
+          ? `${data.count}件の関連箇所を検出しました。`
+          : "該当するコードは見つかりませんでした。"
+      );
+    } catch {
+      setSearchResults([]);
+      setSearchMessage("検索に失敗しました。Arc Coreを確認してください。");
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -263,6 +371,64 @@ function App() {
                 <span>登録数</span>
                 <strong>{projects.length}件</strong>
               </div>
+              <div>
+                <span>索引ファイル</span>
+                <strong>{indexSummary?.file_count ?? 0}件</strong>
+              </div>
+              <div>
+                <span>コード行数</span>
+                <strong>
+                  {(indexSummary?.total_lines ?? 0).toLocaleString()}行
+                </strong>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section className="code-search-section">
+          <article className="card code-search-card">
+            <div className="section-heading">
+              <div>
+                <p className="card-label">CODE SEARCH</p>
+                <h2>Profit Radarのコードを検索</h2>
+              </div>
+              <span className="search-summary">
+                {indexSummary
+                  ? `${indexSummary.file_count}ファイル / ${indexSummary.symbol_count}シンボル`
+                  : "索引未取得"}
+              </span>
+            </div>
+
+            <form className="code-search-form" onSubmit={handleCodeSearch}>
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="例：返信検知、dashboard/home、company_id"
+              />
+              <button type="submit" disabled={isSearching}>
+                {isSearching ? "検索中..." : "コード検索"}
+              </button>
+            </form>
+
+            <p className="search-message">{searchMessage}</p>
+
+            <div className="search-results">
+              {searchResults.map((result, index) => (
+                <div
+                  className="search-result-item"
+                  key={`${result.path}-${result.line_number}-${index}`}
+                >
+                  <div className="search-result-header">
+                    <strong>{result.path}</strong>
+                    <span>
+                      {result.line_number
+                        ? `Line ${result.line_number}`
+                        : "パス一致"}
+                    </span>
+                  </div>
+                  <code>{result.preview}</code>
+                </div>
+              ))}
             </div>
           </article>
         </section>
