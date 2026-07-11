@@ -1,10 +1,15 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.database import get_connection
-from app.projects.models import ProjectCreate, ProjectResponse
+from app.projects.models import (
+    ProjectCreate,
+    ProjectResponse,
+    ProjectTreeResponse,
+)
+from app.projects.reader import ProjectReadError, build_project_tree
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -20,6 +25,25 @@ def _row_to_project(row) -> ProjectResponse:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _get_project_row(project_id: int):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT
+                id,
+                name,
+                path,
+                project_type,
+                status,
+                created_at,
+                updated_at
+            FROM projects
+            WHERE id = ?
+            """,
+            (project_id,),
+        ).fetchone()
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -111,7 +135,39 @@ def create_project(payload: ProjectCreate) -> ProjectResponse:
                 status_code=409,
                 detail="このプロジェクトはすでに登録されています。",
             ) from error
-
         raise
 
     return _row_to_project(row)
+
+
+@router.get("/{project_id}/tree", response_model=ProjectTreeResponse)
+def get_project_tree(
+    project_id: int,
+    max_depth: int = Query(default=8, ge=1, le=15),
+    max_entries: int = Query(default=3000, ge=100, le=10000),
+) -> ProjectTreeResponse:
+    project = _get_project_row(project_id)
+
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail="プロジェクトが見つかりません。",
+        )
+
+    try:
+        tree = build_project_tree(
+            project_path=project["path"],
+            max_depth=max_depth,
+            max_entries=max_entries,
+        )
+    except ProjectReadError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+    return ProjectTreeResponse(
+        project_id=project["id"],
+        project_name=project["name"],
+        **tree,
+    )

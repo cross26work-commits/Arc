@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -15,3 +17,24 @@ class ProjectResponse(BaseModel):
     status: str
     created_at: str
     updated_at: str
+
+
+class FileTreeItem(BaseModel):
+    name: str
+    path: str
+    type: Literal["directory", "file"]
+    size: int | None = None
+    children: list["FileTreeItem"] | None = None
+
+
+class ProjectTreeResponse(BaseModel):
+    project_id: int
+    project_name: str
+    root_name: str
+    root_path: str
+    entries: list[FileTreeItem]
+    entry_count: int
+    truncated: bool
+    excluded_names: list[str]
+    max_depth: int
+    max_entries: int
