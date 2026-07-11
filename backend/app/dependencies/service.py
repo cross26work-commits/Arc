@@ -543,17 +543,22 @@ def _calculate_risk(
     direct_dependents: int,
     affected_count: int,
 ) -> dict[str, Any]:
+    indirect_affected = max(
+        affected_count - direct_dependents,
+        0,
+    )
+
     score = (
-        direct_dependents * 12
-        + affected_count * 5
+        direct_dependents * 10
+        + indirect_affected * 4
     )
 
     score = min(score, 100)
 
-    if score >= 70:
+    if score >= 75:
         level = "high"
         label = "高"
-    elif score >= 30:
+    elif score >= 35:
         level = "medium"
         label = "中"
     else:
@@ -564,9 +569,11 @@ def _calculate_risk(
         "level": level,
         "label": label,
         "score": score,
+        "direct_dependent_count": direct_dependents,
+        "indirect_affected_count": indirect_affected,
         "reason": (
-            f"直接参照{direct_dependents}件、"
-            f"影響候補{affected_count}件"
+            f"直接利用元{direct_dependents}件、"
+            f"間接影響候補{indirect_affected}件"
         ),
     }
 
@@ -616,7 +623,7 @@ def analyze_project_dependencies(
         },
         "unresolved": unresolved[:200],
         "truncated": len(files) >= max_files,
-        "analysis_engine": "arc-dependency-graph-v1.0",
+        "analysis_engine": "arc-dependency-graph-v1.1",
     }
 
     if include_graph:
@@ -659,6 +666,10 @@ def analyze_project_dependencies(
             "direct_dependents": direct_dependents,
             "affected_files": affected,
             "affected_count": len(affected),
+            "indirect_affected_count": max(
+                len(affected) - len(direct_dependents),
+                0,
+            ),
             "risk": risk,
         }
 
@@ -749,6 +760,10 @@ def analyze_dependency_tree(
                 direct_dependents
             ),
             "affected_count": len(affected),
+            "indirect_affected_count": max(
+                len(affected) - len(direct_dependents),
+                0,
+            ),
             "unresolved_internal_imports": len(
                 unresolved
             ),
@@ -757,7 +772,7 @@ def analyze_dependency_tree(
         "direct_dependents": direct_dependents,
         "affected_files": affected,
         "risk": risk,
-        "analysis_engine": "arc-dependency-tree-v1.0",
+        "analysis_engine": "arc-dependency-tree-v1.1",
     }
 
     if direction in {

@@ -188,6 +188,8 @@ type DependencyRisk = {
   level: "low" | "medium" | "high";
   label: string;
   score: number;
+  direct_dependent_count: number;
+  indirect_affected_count: number;
   reason: string;
 };
 
@@ -223,6 +225,7 @@ type DependencyTreeResponse = {
     direct_dependency_count: number;
     direct_dependent_count: number;
     affected_count: number;
+    indirect_affected_count: number;
     unresolved_internal_imports: number;
   };
   direct_dependencies: string[];
@@ -463,6 +466,21 @@ function App() {
       setIsAnalysisLoading(false);
       setIsDependencyLoading(false);
     }
+  };
+
+  const handleDependencyOpen = async (
+    relativePath: string
+  ) => {
+    await handleOpenFile(relativePath, null);
+
+    window.setTimeout(() => {
+      document
+        .querySelector(".file-viewer-section")
+        ?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+    }, 100);
   };
 
   const handleCodeSearch = async (
@@ -1221,11 +1239,11 @@ function App() {
                                     </strong>
                                   </div>
                                   <div>
-                                    <span>影響候補</span>
+                                    <span>間接影響</span>
                                     <strong>
                                       {
                                         dependencyData.summary
-                                          .affected_count
+                                          .indirect_affected_count
                                       }
                                     </strong>
                                   </div>
@@ -1248,9 +1266,19 @@ function App() {
                                       {dependencyData
                                         .direct_dependencies
                                         .map((item) => (
-                                          <code key={item}>
-                                            {item}
-                                          </code>
+                                          <button
+                                            type="button"
+                                            className="dependency-file-button"
+                                            key={item}
+                                            onClick={() =>
+                                              handleDependencyOpen(item)
+                                            }
+                                            title={item}
+                                          >
+                                            <span>依存</span>
+                                            <code>{item}</code>
+                                            <small>開く →</small>
+                                          </button>
                                         ))}
                                     </div>
                                   </details>
@@ -1273,34 +1301,61 @@ function App() {
                                       {dependencyData
                                         .direct_dependents
                                         .map((item) => (
-                                          <code key={item}>
-                                            {item}
-                                          </code>
+                                          <button
+                                            type="button"
+                                            className="dependency-file-button dependent"
+                                            key={item}
+                                            onClick={() =>
+                                              handleDependencyOpen(item)
+                                            }
+                                            title={item}
+                                          >
+                                            <span>利用元</span>
+                                            <code>{item}</code>
+                                            <small>開く →</small>
+                                          </button>
                                         ))}
                                     </div>
                                   </details>
                                 )}
 
-                                {dependencyData.affected_files.length >
-                                  0 && (
+                                {dependencyData.summary
+                                  .indirect_affected_count > 0 && (
                                   <details className="dependency-details">
                                     <summary>
                                       影響候補
                                       <span>
                                         {
                                           dependencyData
-                                            .affected_files.length
+                                            .summary
+                                            .indirect_affected_count
                                         }
                                       </span>
                                     </summary>
                                     <div className="dependency-file-list">
                                       {dependencyData
                                         .affected_files
+                                        .filter(
+                                          (item) => item.depth > 1
+                                        )
                                         .map((item) => (
-                                          <code key={item.path}>
-                                            Depth {item.depth} —{" "}
-                                            {item.path}
-                                          </code>
+                                          <button
+                                            type="button"
+                                            className="dependency-file-button affected"
+                                            key={item.path}
+                                            onClick={() =>
+                                              handleDependencyOpen(
+                                                item.path
+                                              )
+                                            }
+                                            title={item.path}
+                                          >
+                                            <span>
+                                              Depth {item.depth}
+                                            </span>
+                                            <code>{item.path}</code>
+                                            <small>開く →</small>
+                                          </button>
                                         ))}
                                     </div>
                                   </details>

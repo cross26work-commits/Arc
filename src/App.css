@@ -1287,3 +1287,78 @@ button {
     grid-template-columns: 1fr;
   }
 }
+
+/* ======================================
+   Dependency Navigation
+====================================== */
+
+.dependency-file-button {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px;
+  border: 1px solid rgba(96, 165, 250, 0.1);
+  border-radius: 7px;
+  background: rgba(4, 12, 26, 0.6);
+  color: inherit;
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.dependency-file-button:hover {
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(37, 99, 235, 0.1);
+  transform: translateX(2px);
+}
+
+.dependency-file-button > span {
+  padding: 3px 5px;
+  border: 1px solid rgba(96, 165, 250, 0.14);
+  border-radius: 5px;
+  color: #93c5fd;
+  font-size: 7px;
+  text-align: center;
+}
+
+.dependency-file-button.dependent > span {
+  border-color: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+}
+
+.dependency-file-button.affected > span {
+  border-color: rgba(168, 85, 247, 0.18);
+  color: #c4b5fd;
+}
+
+.dependency-file-button code {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dependency-file-button small {
+  color: #475569;
+  font-size: 7px;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .dependency-file-button {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .dependency-file-button small {
+    display: none;
+  }
+}
