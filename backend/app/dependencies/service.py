@@ -6,15 +6,59 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from app.projects.reader import (
-    EXCLUDED_NAMES,
-    READABLE_EXTENSIONS,
-)
-
 
 class DependencyGraphError(Exception):
     """依存関係解析に失敗した場合の例外。"""
 
+
+SOURCE_ROOT_NAMES = (
+    "backend",
+    "frontend",
+)
+
+EXCLUDED_DIRECTORY_NAMES = {
+    ".git",
+    ".idea",
+    ".vscode",
+    ".next",
+    ".turbo",
+    "__pycache__",
+    "node_modules",
+    "venv",
+    ".venv",
+    "dist",
+    "build",
+    "coverage",
+    "target",
+    "backups",
+    "backup",
+    "logs",
+}
+
+SUPPORTED_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+}
+
+RESOLUTION_EXTENSIONS = [
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".json",
+]
+
+INDEX_FILES = [
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    "__init__.py",
+]
 
 JS_IMPORT_PATTERN = re.compile(
     r"""
@@ -42,31 +86,6 @@ JS_IMPORT_PATTERN = re.compile(
     re.VERBOSE,
 )
 
-SUPPORTED_EXTENSIONS = {
-    ".py",
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-}
-
-RESOLUTION_EXTENSIONS = [
-    ".py",
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-    ".json",
-]
-
-INDEX_FILES = [
-    "index.ts",
-    "index.tsx",
-    "index.js",
-    "index.jsx",
-    "__init__.py",
-]
-
 
 def _is_inside(root: Path, target: Path) -> bool:
     try:
@@ -76,34 +95,54 @@ def _is_inside(root: Path, target: Path) -> bool:
         return False
 
 
+def _is_excluded(path: Path) -> bool:
+    return any(
+        part in EXCLUDED_DIRECTORY_NAMES
+        for part in path.parts
+    )
+
+
 def _collect_source_files(
     root: Path,
     max_files: int,
 ) -> list[Path]:
     files: list[Path] = []
 
-    for path in root.rglob("*"):
-        if len(files) >= max_files:
-            break
+    source_roots = [
+        root / name
+        for name in SOURCE_ROOT_NAMES
+        if (root / name).exists()
+        and (root / name).is_dir()
+    ]
 
-        if not path.is_file():
-            continue
+    if not source_roots:
+        raise DependencyGraphError(
+            "backendまたはfrontendフォルダが見つかりません。"
+        )
 
-        if any(part in EXCLUDED_NAMES for part in path.parts):
-            continue
+    for source_root in source_roots:
+        for path in source_root.rglob("*"):
+            if len(files) >= max_files:
+                return sorted(files)
 
-        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            continue
+            if not path.is_file():
+                continue
 
-        try:
-            resolved = path.resolve()
-        except (OSError, RuntimeError):
-            continue
+            if _is_excluded(path):
+                continue
 
-        if not _is_inside(root, resolved):
-            continue
+            if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
 
-        files.append(resolved)
+            try:
+                resolved = path.resolve()
+            except (OSError, RuntimeError):
+                continue
+
+            if not _is_inside(root, resolved):
+                continue
+
+            files.append(resolved)
 
     return sorted(files)
 
@@ -369,21 +408,91 @@ def _build_edges(
             outbound[source_relative].add(target_relative)
             inbound[target_relative].add(source_relative)
 
-    outbound_result = {
-        key: sorted(values)
-        for key, values in outbound.items()
-    }
-
-    inbound_result = {
-        key: sorted(values)
-        for key, values in inbound.items()
-    }
-
     return (
-        outbound_result,
-        inbound_result,
+        {
+            key: sorted(values)
+            for key, values in outbound.items()
+        },
+        {
+            key: sorted(values)
+            for key, values in inbound.items()
+        },
         unresolved,
     )
+
+
+def _build_tree(
+    *,
+    root_path: str,
+    edges: dict[str, list[str]],
+    max_depth: int,
+    max_nodes: int,
+) -> dict[str, Any]:
+    node_counter = 0
+
+    def walk(
+        current_path: str,
+        depth: int,
+        ancestors: set[str],
+    ) -> dict[str, Any]:
+        nonlocal node_counter
+
+        node_counter += 1
+
+        node: dict[str, Any] = {
+            "path": current_path,
+            "name": Path(current_path).name,
+            "depth": depth,
+            "children": [],
+            "cycle": False,
+            "truncated": False,
+        }
+
+        if current_path in ancestors:
+            node["cycle"] = True
+            return node
+
+        if depth >= max_depth:
+            if edges.get(current_path):
+                node["truncated"] = True
+            return node
+
+        if node_counter >= max_nodes:
+            node["truncated"] = True
+            return node
+
+        next_ancestors = {
+            *ancestors,
+            current_path,
+        }
+
+        for child_path in edges.get(current_path, []):
+            if node_counter >= max_nodes:
+                node["truncated"] = True
+                break
+
+            node["children"].append(
+                walk(
+                    current_path=child_path,
+                    depth=depth + 1,
+                    ancestors=next_ancestors,
+                )
+            )
+
+        return node
+
+    tree = walk(
+        current_path=root_path,
+        depth=0,
+        ancestors=set(),
+    )
+
+    return {
+        "tree": tree,
+        "node_count": node_counter,
+        "max_depth": max_depth,
+        "max_nodes": max_nodes,
+    }
 
 
 def _transitive_impact(
@@ -429,12 +538,46 @@ def _transitive_impact(
     )
 
 
+def _calculate_risk(
+    *,
+    direct_dependents: int,
+    affected_count: int,
+) -> dict[str, Any]:
+    score = (
+        direct_dependents * 12
+        + affected_count * 5
+    )
+
+    score = min(score, 100)
+
+    if score >= 70:
+        level = "high"
+        label = "高"
+    elif score >= 30:
+        level = "medium"
+        label = "中"
+    else:
+        level = "low"
+        label = "低"
+
+    return {
+        "level": level,
+        "label": label,
+        "score": score,
+        "reason": (
+            f"直接参照{direct_dependents}件、"
+            f"影響候補{affected_count}件"
+        ),
+    }
+
+
 def analyze_project_dependencies(
     *,
     project_path: str,
     target_path: str | None = None,
     max_files: int = 3000,
     max_impact_depth: int = 5,
+    include_graph: bool = False,
 ) -> dict[str, Any]:
     root = Path(project_path).expanduser().resolve()
 
@@ -471,13 +614,15 @@ def analyze_project_dependencies(
             "files_with_dependents": len(inbound),
             "unresolved_internal_imports": len(unresolved),
         },
-        "nodes": nodes,
-        "outbound": outbound,
-        "inbound": inbound,
-        "unresolved": unresolved[:500],
+        "unresolved": unresolved[:200],
         "truncated": len(files) >= max_files,
-        "analysis_engine": "arc-dependency-graph-v0.1",
+        "analysis_engine": "arc-dependency-graph-v1.0",
     }
+
+    if include_graph:
+        result["nodes"] = nodes
+        result["outbound"] = outbound
+        result["inbound"] = inbound
 
     if target_path:
         normalized = target_path.strip().lstrip("/")
@@ -503,12 +648,10 @@ def analyze_project_dependencies(
             max_depth=max_impact_depth,
         )
 
-        risk_level = "low"
-
-        if len(affected) >= 20:
-            risk_level = "high"
-        elif len(affected) >= 5:
-            risk_level = "medium"
+        risk = _calculate_risk(
+            direct_dependents=len(direct_dependents),
+            affected_count=len(affected),
+        )
 
         result["target"] = {
             "path": normalized,
@@ -516,7 +659,127 @@ def analyze_project_dependencies(
             "direct_dependents": direct_dependents,
             "affected_files": affected,
             "affected_count": len(affected),
-            "risk_level": risk_level,
+            "risk": risk,
         }
+
+    return result
+
+
+def analyze_dependency_tree(
+    *,
+    project_path: str,
+    target_path: str,
+    direction: str = "both",
+    max_files: int = 3000,
+    max_depth: int = 5,
+    max_nodes: int = 300,
+) -> dict[str, Any]:
+    if direction not in {
+        "dependencies",
+        "dependents",
+        "both",
+    }:
+        raise DependencyGraphError(
+            "directionはdependencies、dependents、bothのいずれかです。"
+        )
+
+    root = Path(project_path).expanduser().resolve()
+
+    if not root.exists() or not root.is_dir():
+        raise DependencyGraphError(
+            "登録済みプロジェクトが存在しません。"
+        )
+
+    files = _collect_source_files(
+        root=root,
+        max_files=max_files,
+    )
+
+    outbound, inbound, unresolved = _build_edges(
+        root=root,
+        files=files,
+    )
+
+    nodes = {
+        _relative(root, path)
+        for path in files
+    }
+
+    normalized = target_path.strip().lstrip("/")
+
+    if normalized not in nodes:
+        raise DependencyGraphError(
+            "指定ファイルは依存関係解析対象に存在しません。"
+        )
+
+    direct_dependencies = outbound.get(
+        normalized,
+        [],
+    )
+
+    direct_dependents = inbound.get(
+        normalized,
+        [],
+    )
+
+    affected = _transitive_impact(
+        target=normalized,
+        inbound=inbound,
+        max_depth=max_depth,
+    )
+
+    risk = _calculate_risk(
+        direct_dependents=len(direct_dependents),
+        affected_count=len(affected),
+    )
+
+    result: dict[str, Any] = {
+        "target": normalized,
+        "direction": direction,
+        "summary": {
+            "file_count": len(nodes),
+            "edge_count": sum(
+                len(values)
+                for values in outbound.values()
+            ),
+            "direct_dependency_count": len(
+                direct_dependencies
+            ),
+            "direct_dependent_count": len(
+                direct_dependents
+            ),
+            "affected_count": len(affected),
+            "unresolved_internal_imports": len(
+                unresolved
+            ),
+        },
+        "direct_dependencies": direct_dependencies,
+        "direct_dependents": direct_dependents,
+        "affected_files": affected,
+        "risk": risk,
+        "analysis_engine": "arc-dependency-tree-v1.0",
+    }
+
+    if direction in {
+        "dependencies",
+        "both",
+    }:
+        result["dependency_tree"] = _build_tree(
+            root_path=normalized,
+            edges=outbound,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+        )
+
+    if direction in {
+        "dependents",
+        "both",
+    }:
+        result["dependent_tree"] = _build_tree(
+            root_path=normalized,
+            edges=inbound,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+        )
 
     return result
