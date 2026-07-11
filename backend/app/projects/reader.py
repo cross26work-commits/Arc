@@ -340,3 +340,112 @@ def read_project_file(project_path: str, relative_path: str) -> dict:
         "content": content,
         "truncated": truncated,
     }
+
+
+READABLE_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".json",
+    ".sql",
+    ".md",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".css",
+    ".scss",
+    ".html",
+    ".rs",
+    ".sh",
+}
+
+LANGUAGE_NAMES = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript-react",
+    ".js": "javascript",
+    ".jsx": "javascript-react",
+    ".json": "json",
+    ".sql": "sql",
+    ".md": "markdown",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".css": "css",
+    ".scss": "scss",
+    ".html": "html",
+    ".rs": "rust",
+    ".sh": "shell",
+}
+
+MAX_READ_BYTES = 1024 * 1024
+
+
+def read_project_file(project_path: str, relative_path: str) -> dict:
+    root = Path(project_path).expanduser().resolve()
+
+    if not root.exists() or not root.is_dir():
+        raise ProjectReadError(
+            "登録済みプロジェクトフォルダが存在しません。"
+        )
+
+    normalized_relative = relative_path.strip().lstrip("/")
+
+    if not normalized_relative:
+        raise ProjectReadError("ファイルパスを指定してください。")
+
+    target = (root / normalized_relative).resolve()
+
+    if not _is_inside_project(root, target):
+        raise ProjectReadError(
+            "プロジェクト外のファイルは読み取れません。"
+        )
+
+    if not target.exists():
+        raise ProjectReadError("指定されたファイルが存在しません。")
+
+    if not target.is_file():
+        raise ProjectReadError("指定されたパスはファイルではありません。")
+
+    if any(part in EXCLUDED_NAMES for part in target.parts):
+        raise ProjectReadError(
+            "除外対象のファイルは読み取れません。"
+        )
+
+    suffix = target.suffix.lower()
+
+    if suffix not in READABLE_EXTENSIONS:
+        raise ProjectReadError(
+            "この形式のファイルは現在読み取れません。"
+        )
+
+    try:
+        size_bytes = target.stat().st_size
+    except OSError as error:
+        raise ProjectReadError(
+            "ファイル情報を取得できません。"
+        ) from error
+
+    truncated = size_bytes > MAX_READ_BYTES
+
+    try:
+        with target.open("rb") as file:
+            raw_content = file.read(MAX_READ_BYTES)
+    except (OSError, PermissionError) as error:
+        raise ProjectReadError(
+            "ファイルを読み取れません。"
+        ) from error
+
+    content = raw_content.decode("utf-8", errors="replace")
+    line_count = content.count("\n") + (1 if content else 0)
+
+    return {
+        "relative_path": target.relative_to(root).as_posix(),
+        "language": LANGUAGE_NAMES.get(suffix, "text"),
+        "size_bytes": size_bytes,
+        "line_count": line_count,
+        "content": content,
+        "truncated": truncated,
+    }

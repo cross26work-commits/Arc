@@ -60,3 +60,14 @@ class FileContentResponse(BaseModel):
     line_count: int
     content: str
     truncated: bool
+
+
+class FileContentResponse(BaseModel):
+    project_id: int
+    project_name: str
+    relative_path: str
+    language: str
+    size_bytes: int
+    line_count: int
+    content: str
+    truncated: bool
