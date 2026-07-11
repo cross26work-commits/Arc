@@ -1362,3 +1362,215 @@ button {
     display: none;
   }
 }
+
+/* ======================================
+   Mission Engine
+====================================== */
+
+.mission-card {
+  min-width: 0;
+}
+
+.mission-card .card-heading h2 {
+  max-width: 680px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.state-badge.draft {
+  border-color: rgba(96, 165, 250, 0.25);
+  background: rgba(37, 99, 235, 0.08);
+  color: #93c5fd;
+}
+
+.state-badge.planned,
+.state-badge.approved {
+  border-color: rgba(168, 85, 247, 0.25);
+  background: rgba(168, 85, 247, 0.08);
+  color: #c4b5fd;
+}
+
+.state-badge.running,
+.state-badge.verifying {
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+}
+
+.state-badge.failed,
+.state-badge.cancelled {
+  border-color: rgba(248, 113, 113, 0.25);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fca5a5;
+}
+
+.mission-progress {
+  margin: 0 0 14px;
+}
+
+.mission-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.mission-progress-header span {
+  color: #64748b;
+  font-size: 9px;
+}
+
+.mission-progress-header strong {
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.mission-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.mission-progress-value {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    #2563eb,
+    #38bdf8
+  );
+  transition: width 300ms ease;
+}
+
+.mission-details {
+  margin-top: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.09);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.mission-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 12px;
+  color: #cbd5e1;
+  font-size: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.mission-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.mission-details summary span {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.12);
+  color: #93c5fd;
+  font-size: 8px;
+}
+
+.mission-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 10px 10px;
+}
+
+.mission-task {
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.07);
+  border-radius: 8px;
+  background: rgba(4, 12, 26, 0.55);
+}
+
+.mission-task.ready {
+  border-color: rgba(96, 165, 250, 0.25);
+  background: rgba(37, 99, 235, 0.07);
+}
+
+.mission-task.running {
+  border-color: rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.mission-task.completed {
+  opacity: 0.68;
+}
+
+.mission-task.failed,
+.mission-task.blocked {
+  border-color: rgba(248, 113, 113, 0.2);
+  background: rgba(248, 113, 113, 0.05);
+}
+
+.mission-task-position {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(37, 99, 235, 0.12);
+  color: #93c5fd;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.mission-task-body {
+  min-width: 0;
+}
+
+.mission-task-body > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mission-task-body strong {
+  color: #dbeafe;
+  font-size: 10px;
+}
+
+.mission-task-body > div > span {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 8px;
+}
+
+.mission-task-body p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.mission-success-criteria {
+  margin: 0;
+  padding: 0 12px 12px;
+  color: #94a3b8;
+  font-size: 9px;
+  line-height: 1.7;
+}
+
+.command-actions button:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+  opacity: 0.5;
+}
+
+@media (max-width: 700px) {
+  .mission-card .card-heading h2 {
+    max-width: 240px;
+  }
+}

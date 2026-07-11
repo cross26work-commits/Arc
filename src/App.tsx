@@ -29,6 +29,67 @@ type CoreStatus = {
   version: string;
 };
 
+
+type MissionStatus =
+  | "DRAFT"
+  | "PLANNED"
+  | "APPROVED"
+  | "RUNNING"
+  | "VERIFYING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
+type MissionTaskStatus =
+  | "PENDING"
+  | "READY"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED"
+  | "BLOCKED";
+
+type MissionTask = {
+  id: number;
+  mission_id: number;
+  position: number;
+  title: string;
+  description: string;
+  task_type: string;
+  status: MissionTaskStatus;
+  target_path: string | null;
+  result: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type MissionLog = {
+  id: number;
+  mission_id: number;
+  level: string;
+  event_type: string;
+  message: string;
+  metadata: string | null;
+  created_at: string;
+};
+
+type Mission = {
+  id: number;
+  project_id: number;
+  project_name: string;
+  title: string;
+  objective: string;
+  status: MissionStatus;
+  progress: number;
+  success_criteria: string;
+  next_action: string;
+  error_count: number;
+  created_at: string;
+  updated_at: string;
+  tasks: MissionTask[];
+  logs: MissionLog[];
+};
+
 type Project = {
   id: number;
   name: string;
@@ -237,11 +298,47 @@ type DependencyTreeResponse = {
   analysis_engine: string;
 };
 
+const missionStatusLabel = (
+  status: MissionStatus
+): string => {
+  const labels: Record<MissionStatus, string> = {
+    DRAFT: "準備中",
+    PLANNED: "計画済み",
+    APPROVED: "承認済み",
+    RUNNING: "実行中",
+    VERIFYING: "検証中",
+    COMPLETED: "完了",
+    FAILED: "失敗",
+    CANCELLED: "中止",
+  };
+
+  return labels[status];
+};
+
+const missionTaskStatusLabel = (
+  status: MissionTaskStatus
+): string => {
+  const labels: Record<MissionTaskStatus, string> = {
+    PENDING: "待機",
+    READY: "次の作業",
+    RUNNING: "実行中",
+    COMPLETED: "完了",
+    FAILED: "失敗",
+    SKIPPED: "スキップ",
+    BLOCKED: "停止",
+  };
+
+  return labels[status];
+};
+
 function App() {
   const [command, setCommand] = useState("");
-  const [message, setMessage] = useState(
+  const [currentMission, setCurrentMission] =
+    useState<Mission | null>(null);
+  const [missionMessage, setMissionMessage] = useState(
     "現在、実行中のMissionはありません。"
   );
+  const [isMissionLoading, setIsMissionLoading] = useState(false);
   const [coreStatus, setCoreStatus] = useState<CoreStatus>({
     connected: false,
     service: "Arc Core",
@@ -269,6 +366,41 @@ function App() {
   const [dependencyMessage, setDependencyMessage] = useState("");
   const [isDependencyLoading, setIsDependencyLoading] = useState(false);
   const activeProject = projects[0] ?? null;
+
+  const loadCurrentMission = async (
+    projectId: number
+  ) => {
+    try {
+      const params = new URLSearchParams({
+        project_id: String(projectId),
+      });
+
+      const response = await fetch(
+        `http://127.0.0.1:8765/missions/current?${params}`
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data: Mission | null = await response.json();
+
+      setCurrentMission(data);
+
+      if (data) {
+        setMissionMessage(data.next_action);
+      } else {
+        setMissionMessage(
+          "現在、実行中のMissionはありません。"
+        );
+      }
+    } catch {
+      setCurrentMission(null);
+      setMissionMessage(
+        "Mission情報を取得できません。"
+      );
+    }
+  };
 
   useEffect(() => {
     const checkCore = async () => {
@@ -310,6 +442,10 @@ function App() {
         const data: Project[] = await response.json();
         setProjects(data);
         setProjectError("");
+
+        if (data.length > 0) {
+          await loadCurrentMission(data[0].id);
+        }
       } catch {
         setProjects([]);
         setProjectError("プロジェクト情報を取得できません。");
@@ -535,21 +671,79 @@ function App() {
     }
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (
+    event: React.FormEvent<HTMLFormElement>
+  ) => {
     event.preventDefault();
 
     const trimmedCommand = command.trim();
 
     if (!trimmedCommand) {
-      setMessage("開発したい内容を入力してください。");
+      setMissionMessage(
+        "開発したい内容を入力してください。"
+      );
       return;
     }
 
-    setMessage(
-      `Mission候補を受け付けました：「${trimmedCommand}」\n現在はUI段階のため、実行機能は次の工程で接続します。`
-    );
-    setCommand("");
+    if (!activeProject) {
+      setMissionMessage(
+        "対象プロジェクトが登録されていません。"
+      );
+      return;
+    }
+
+    if (currentMission) {
+      setMissionMessage(
+        "現在実行中のMissionがあります。完了または中止後に新しいMissionを作成してください。"
+      );
+      return;
+    }
+
+    setIsMissionLoading(true);
+    setMissionMessage("Missionを作成しています。");
+
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:8765/missions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            project_id: activeProject.id,
+            objective: trimmedCommand,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response
+          .json()
+          .catch(() => null);
+
+        throw new Error(
+          errorData?.detail ??
+            `HTTP ${response.status}`
+        );
+      }
+
+      const data: Mission = await response.json();
+
+      setCurrentMission(data);
+      setMissionMessage(data.next_action);
+      setCommand("");
+    } catch (error) {
+      setMissionMessage(
+        error instanceof Error
+          ? error.message
+          : "Mission作成に失敗しました。"
+      );
+    } finally {
+      setIsMissionLoading(false);
+    }
   };
+
 
   return (
     <div className="app-shell">
@@ -629,27 +823,123 @@ function App() {
             <div className="card-heading">
               <div>
                 <p className="card-label">CURRENT MISSION</p>
-                <h2>待機中</h2>
+                <h2>
+                  {currentMission?.title ?? "待機中"}
+                </h2>
               </div>
-              <span className="state-badge">READY</span>
+
+              <span
+                className={`state-badge ${
+                  currentMission
+                    ? currentMission.status.toLowerCase()
+                    : ""
+                }`}
+              >
+                {currentMission
+                  ? missionStatusLabel(currentMission.status)
+                  : "READY"}
+              </span>
             </div>
 
-            <p className="mission-message">{message}</p>
+            <p className="mission-message">
+              {missionMessage}
+            </p>
+
+            {currentMission && (
+              <div className="mission-progress">
+                <div className="mission-progress-header">
+                  <span>Mission進捗</span>
+                  <strong>
+                    {currentMission.progress}%
+                  </strong>
+                </div>
+
+                <div className="mission-progress-track">
+                  <div
+                    className="mission-progress-value"
+                    style={{
+                      width: `${currentMission.progress}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="mission-stats">
               <div>
                 <span>進捗</span>
-                <strong>0%</strong>
+                <strong>
+                  {currentMission?.progress ?? 0}%
+                </strong>
               </div>
               <div>
-                <span>実行中タスク</span>
-                <strong>0</strong>
+                <span>現在タスク</span>
+                <strong>
+                  {currentMission
+                    ? currentMission.tasks.filter(
+                        (task) =>
+                          task.status === "READY" ||
+                          task.status === "RUNNING"
+                      ).length
+                    : 0}
+                </strong>
               </div>
               <div>
                 <span>未解決エラー</span>
-                <strong>0</strong>
+                <strong>
+                  {currentMission?.error_count ?? 0}
+                </strong>
               </div>
             </div>
+
+            {currentMission && (
+              <details className="mission-details">
+                <summary>
+                  開発タスク
+                  <span>
+                    {currentMission.tasks.length}
+                  </span>
+                </summary>
+
+                <div className="mission-task-list">
+                  {currentMission.tasks.map((task) => (
+                    <div
+                      className={`mission-task ${task.status.toLowerCase()}`}
+                      key={task.id}
+                    >
+                      <span className="mission-task-position">
+                        {task.position}
+                      </span>
+
+                      <div className="mission-task-body">
+                        <div>
+                          <strong>{task.title}</strong>
+                          <span>
+                            {missionTaskStatusLabel(
+                              task.status
+                            )}
+                          </span>
+                        </div>
+
+                        <p>{task.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+
+            {currentMission && (
+              <details className="mission-details">
+                <summary>
+                  成功条件
+                </summary>
+
+                <p className="mission-success-criteria">
+                  {currentMission.success_criteria}
+                </p>
+              </details>
+            )}
           </article>
 
           <article className="card project-card">
@@ -1426,7 +1716,19 @@ function App() {
 
               <div className="command-actions">
                 <span>自然言語で目的を入力してください。</span>
-                <button type="submit">Missionを作成</button>
+                <button
+                  type="submit"
+                  disabled={
+                    isMissionLoading ||
+                    currentMission !== null
+                  }
+                >
+                  {isMissionLoading
+                    ? "作成中..."
+                    : currentMission
+                      ? "Mission実行中"
+                      : "Missionを作成"}
+                </button>
               </div>
             </form>
           </article>
