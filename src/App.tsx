@@ -66,6 +66,17 @@ type IndexSummary = {
   symbol_types: Record<string, number>;
 };
 
+type FileContent = {
+  project_id: number;
+  project_name: string;
+  relative_path: string;
+  language: string;
+  size_bytes: number;
+  line_count: number;
+  content: string;
+  truncated: boolean;
+};
+
 function App() {
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState(
@@ -85,6 +96,10 @@ function App() {
   );
   const [isSearching, setIsSearching] = useState(false);
   const [indexSummary, setIndexSummary] = useState<IndexSummary | null>(null);
+  const [openedFile, setOpenedFile] = useState<FileContent | null>(null);
+  const [openedLine, setOpenedLine] = useState<number | null>(null);
+  const [fileMessage, setFileMessage] = useState("");
+  const [isFileLoading, setIsFileLoading] = useState(false);
   const activeProject = projects[0] ?? null;
 
   useEffect(() => {
@@ -164,6 +179,49 @@ function App() {
       window.clearInterval(indexTimer);
     };
   }, []);
+
+  const handleOpenFile = async (
+    relativePath: string,
+    lineNumber: number | null
+  ) => {
+    if (!activeProject) {
+      setFileMessage("プロジェクトが登録されていません。");
+      return;
+    }
+
+    setIsFileLoading(true);
+    setFileMessage("ファイルを読み込んでいます。");
+    setOpenedLine(lineNumber);
+
+    try {
+      const params = new URLSearchParams({
+        path: relativePath,
+      });
+
+      const response = await fetch(
+        `http://127.0.0.1:8765/projects/${activeProject.id}/file?${params}`
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(errorData?.detail ?? `HTTP ${response.status}`);
+      }
+
+      const data: FileContent = await response.json();
+
+      setOpenedFile(data);
+      setFileMessage("");
+    } catch (error) {
+      setOpenedFile(null);
+      setFileMessage(
+        error instanceof Error
+          ? error.message
+          : "ファイルの読み込みに失敗しました。"
+      );
+    } finally {
+      setIsFileLoading(false);
+    }
+  };
 
   const handleCodeSearch = async (
     event: React.FormEvent<HTMLFormElement>
@@ -414,9 +472,13 @@ function App() {
 
             <div className="search-results">
               {searchResults.map((result, index) => (
-                <div
+                <button
+                  type="button"
                   className="search-result-item"
                   key={`${result.path}-${result.line_number}-${index}`}
+                  onClick={() =>
+                    handleOpenFile(result.path, result.line_number)
+                  }
                 >
                   <div className="search-result-header">
                     <strong>{result.path}</strong>
@@ -427,9 +489,84 @@ function App() {
                     </span>
                   </div>
                   <code>{result.preview}</code>
-                </div>
+                </button>
               ))}
             </div>
+          </article>
+        </section>
+
+        <section className="file-viewer-section">
+          <article className="card file-viewer-card">
+            <div className="section-heading">
+              <div>
+                <p className="card-label">CODE VIEWER</p>
+                <h2>
+                  {openedFile?.relative_path ?? "ファイルを選択してください"}
+                </h2>
+              </div>
+
+              {openedFile && (
+                <div className="file-viewer-actions">
+                  <span>
+                    {openedFile.language} / {openedFile.line_count}行
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenedFile(null);
+                      setOpenedLine(null);
+                      setFileMessage("");
+                    }}
+                  >
+                    閉じる
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {fileMessage && (
+              <p className="file-message">{fileMessage}</p>
+            )}
+
+            {!openedFile && !fileMessage && (
+              <p className="file-viewer-empty">
+                上の検索結果をクリックすると、コードをここに表示します。
+              </p>
+            )}
+
+            {isFileLoading && (
+              <p className="file-viewer-empty">読み込み中...</p>
+            )}
+
+            {openedFile && !isFileLoading && (
+              <>
+                {openedFile.truncated && (
+                  <p className="file-warning">
+                    1MBを超えるため、先頭部分のみ表示しています。
+                  </p>
+                )}
+
+                <div className="code-viewer">
+                  {openedFile.content.split("\n").map((line, index) => {
+                    const lineNumber = index + 1;
+                    const isHighlighted = lineNumber === openedLine;
+
+                    return (
+                      <div
+                        className={`code-line ${
+                          isHighlighted ? "highlighted" : ""
+                        }`}
+                        key={lineNumber}
+                        id={`code-line-${lineNumber}`}
+                      >
+                        <span className="line-number">{lineNumber}</span>
+                        <code>{line || " "}</code>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </article>
         </section>
 
