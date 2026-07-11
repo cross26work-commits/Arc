@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 
 type ActivityItem = {
@@ -23,11 +23,54 @@ const initialActivities: ActivityItem[] = [
   },
 ];
 
+type CoreStatus = {
+  connected: boolean;
+  service: string;
+  version: string;
+};
+
 function App() {
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState(
     "現在、実行中のMissionはありません。"
   );
+  const [coreStatus, setCoreStatus] = useState<CoreStatus>({
+    connected: false,
+    service: "Arc Core",
+    version: "-",
+  });
+
+  useEffect(() => {
+    const checkCore = async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:8765/health");
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        setCoreStatus({
+          connected: data.status === "ok",
+          service: data.service ?? "Arc Core",
+          version: data.version ?? "-",
+        });
+      } catch {
+        setCoreStatus({
+          connected: false,
+          service: "Arc Core",
+          version: "-",
+        });
+      }
+    };
+
+    checkCore();
+
+    const timer = window.setInterval(checkCore, 5000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -102,8 +145,14 @@ function App() {
               Arc
             </div>
             <div className="status-chip">
-              <span className="status-dot waiting" />
-              AI未接続
+              <span
+                className={`status-dot ${
+                  coreStatus.connected ? "success" : "waiting"
+                }`}
+              />
+              {coreStatus.connected
+                ? `${coreStatus.service} v${coreStatus.version}`
+                : "Arc Core未接続"}
             </div>
             <div className="status-chip">
               <span className="status-dot success" />
