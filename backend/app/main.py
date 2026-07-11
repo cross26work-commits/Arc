@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import initialize_database
 from app.projects.router import router as projects_router
 from app.indexer.router import router as indexer_router
+from app.analyzer.router import router as analyzer_router
 
 
 app = FastAPI(
@@ -28,6 +29,7 @@ app.add_middleware(
 
 app.include_router(projects_router)
 app.include_router(indexer_router)
+app.include_router(analyzer_router)
 
 
 @app.on_event("startup")
