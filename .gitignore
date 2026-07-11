@@ -22,3 +22,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+backend/venv/
+
+# Arc local data
+data/*.db
+logs/
+backups/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example

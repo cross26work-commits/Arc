@@ -29,6 +29,16 @@ type CoreStatus = {
   version: string;
 };
 
+type Project = {
+  id: number;
+  name: string;
+  path: string;
+  project_type: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
 function App() {
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState(
@@ -39,6 +49,9 @@ function App() {
     service: "Arc Core",
     version: "-",
   });
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectError, setProjectError] = useState("");
+  const activeProject = projects[0] ?? null;
 
   useEffect(() => {
     const checkCore = async () => {
@@ -69,7 +82,31 @@ function App() {
 
     const timer = window.setInterval(checkCore, 5000);
 
-    return () => window.clearInterval(timer);
+    const loadProjects = async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:8765/projects");
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data: Project[] = await response.json();
+        setProjects(data);
+        setProjectError("");
+      } catch {
+        setProjects([]);
+        setProjectError("プロジェクト情報を取得できません。");
+      }
+    };
+
+    loadProjects();
+
+    const projectTimer = window.setInterval(loadProjects, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(projectTimer);
+    };
   }, []);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -193,23 +230,38 @@ function App() {
             <div className="card-heading">
               <div>
                 <p className="card-label">ACTIVE PROJECT</p>
-                <h2>未登録</h2>
+                <h2>{activeProject?.name ?? "未登録"}</h2>
               </div>
-              <span className="project-icon">PR</span>
+              <span className="project-icon">
+                {activeProject?.name
+                  ? activeProject.name
+                      .split(" ")
+                      .map((word) => word[0])
+                      .join("")
+                      .slice(0, 2)
+                      .toUpperCase()
+                  : "--"}
+              </span>
             </div>
 
             <p className="muted-text">
-              次の工程でProfit Radarのフォルダを登録します。
+              {projectError
+                ? projectError
+                : activeProject
+                  ? activeProject.path
+                  : "Arcへプロジェクトを登録してください。"}
             </p>
 
             <div className="project-details">
               <div>
-                <span>Build</span>
-                <strong>未確認</strong>
+                <span>状態</span>
+                <strong>
+                  {activeProject?.status === "active" ? "稼働中" : "未登録"}
+                </strong>
               </div>
               <div>
-                <span>Git</span>
-                <strong>接続準備済み</strong>
+                <span>登録数</span>
+                <strong>{projects.length}件</strong>
               </div>
             </div>
           </article>
