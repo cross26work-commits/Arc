@@ -103,7 +103,7 @@ class MissionTaskUpdate(BaseModel):
     status: TaskStatus
     result: str | None = Field(
         default=None,
-        max_length=10000,
+        max_length=100000,
     )
     target_path: str | None = Field(
         default=None,

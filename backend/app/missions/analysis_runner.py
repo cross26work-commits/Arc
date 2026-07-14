@@ -383,7 +383,7 @@ def _build_analysis_summary(
     }
 
 
-def run_mission_analysis(
+def _run_mission_analysis_impl(
     mission_id: int,
 ) -> dict[str, Any]:
     mission = get_mission(mission_id)
@@ -481,8 +481,39 @@ def run_mission_analysis(
     result_text = json.dumps(
         summary,
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),
     )
+
+    if len(result_text) > 95000:
+        compact_summary = {
+            "objective": summary["objective"],
+            "search_terms": summary["search_terms"],
+            "candidate_count": summary["candidate_count"],
+            "high_risk_count": summary["high_risk_count"],
+            "medium_risk_count": summary["medium_risk_count"],
+            "api_files": summary["api_files"],
+            "frontend_files": summary["frontend_files"],
+            "backend_files": summary["backend_files"],
+            "candidates": [
+                {
+                    "path": item["path"],
+                    "score": item["score"],
+                    "reasons": item["reasons"],
+                    "role": item.get("role"),
+                    "language": item.get("language"),
+                    "metrics": item.get("metrics"),
+                    "dependency": item.get("dependency"),
+                }
+                for item in summary["candidates"]
+            ],
+            "result_compacted": True,
+        }
+
+        result_text = json.dumps(
+            compact_summary,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     target_path = (
         candidates[0]["path"]
@@ -519,3 +550,109 @@ def run_mission_analysis(
         "mission": mission,
         "analysis": summary,
     }
+
+
+def _recover_analysis_failure(
+    *,
+    mission_id: int,
+    error: Exception,
+) -> None:
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    error_message = (
+        f"{error.__class__.__name__}: {str(error)}"
+    )
+
+    with get_connection() as connection:
+        task = connection.execute(
+            """
+            SELECT id, status
+            FROM mission_tasks
+            WHERE mission_id = ?
+              AND task_type = 'ANALYSIS'
+            LIMIT 1
+            """,
+            (mission_id,),
+        ).fetchone()
+
+        if task is None:
+            return
+
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'READY',
+                result = ?,
+                target_path = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(
+                    {
+                        "status": "FAILED_RETRYABLE",
+                        "error": error_message,
+                    },
+                    ensure_ascii=False,
+                ),
+                now,
+                task["id"],
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'PLANNED',
+                progress = 14,
+                next_action =
+                    '前回の解析失敗を確認し、対象コードの調査を再試行する',
+                error_count = error_count + 1,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                now,
+                mission_id,
+            ),
+        )
+
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="ERROR",
+        event_type="MISSION_ANALYSIS_FAILED",
+        message=(
+            "Missionコード解析に失敗したため、"
+            "ANALYSIS TaskをREADYへ自動復旧しました。"
+        ),
+        metadata={
+            "error_type": error.__class__.__name__,
+            "error": str(error),
+            "retryable": True,
+        },
+    )
+
+
+def run_mission_analysis(
+    mission_id: int,
+) -> dict[str, Any]:
+    try:
+        return _run_mission_analysis_impl(mission_id)
+
+    except Exception as error:
+        _recover_analysis_failure(
+            mission_id=mission_id,
+            error=error,
+        )
+
+        raise MissionAnalysisError(
+            "Mission解析に失敗しました。"
+            "Taskを再試行可能な状態へ復旧しました。"
+            f" 原因: {error}"
+        ) from error
+
