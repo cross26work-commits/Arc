@@ -114,33 +114,93 @@ def _get_project(project_id: int):
 
 
 def _tokenize_objective(objective: str) -> list[str]:
-    values = re.findall(
-        r"[A-Za-z][A-Za-z0-9_/-]{2,}|"
-        r"[一-龥ぁ-んァ-ヶー]{2,}",
+    lowered = objective.lower()
+    tokens: list[str] = []
+
+    english_tokens = re.findall(
+        r"[A-Za-z][A-Za-z0-9_/-]{2,}",
         objective,
     )
 
-    tokens: list[str] = []
-
-    for value in values:
-        normalized = value.strip()
-
-        if not normalized:
-            continue
-
-        if normalized.lower() in STOP_WORDS:
-            continue
+    for value in english_tokens:
+        normalized = value.strip().lower()
 
         if normalized in STOP_WORDS:
             continue
 
         tokens.append(normalized)
 
-    for keyword, hints in SEARCH_HINTS.items():
-        if keyword.lower() in objective.lower():
+    domain_keywords = {
+        "認証": ["auth", "login", "register", "session"],
+        "ログイン": ["auth", "login", "session"],
+        "メール": ["gmail", "email", "reply"],
+        "返信": ["reply", "message", "lead"],
+        "利益": ["profit", "revenue", "results"],
+        "顧客": ["customer", "customers"],
+        "案件": ["lead", "leads"],
+        "設定": ["settings", "config"],
+        "ダッシュボード": ["dashboard", "home"],
+        "sms": ["sms", "message"],
+        "line": ["line", "webhook", "integration"],
+    }
+
+    for keyword, hints in domain_keywords.items():
+        if keyword in lowered:
             tokens.extend(hints)
 
-    return list(dict.fromkeys(tokens))
+    project_audit_requested = any(
+        keyword in objective
+        for keyword in [
+            "現在地",
+            "全体",
+            "ベータテスト",
+            "販売",
+            "リリース",
+            "完成度",
+            "問題",
+            "不備",
+        ]
+    )
+
+    if project_audit_requested:
+        tokens.extend(
+            [
+                "main",
+                "dashboard",
+                "auth",
+                "settings",
+                "health",
+                "service",
+                "api",
+                "test",
+                "error",
+            ]
+        )
+
+    for keyword, hints in SEARCH_HINTS.items():
+        if keyword.lower() in lowered:
+            tokens.extend(hints)
+
+    normalized_tokens: list[str] = []
+
+    for token in tokens:
+        normalized = token.strip().lower()
+
+        if not normalized:
+            continue
+
+        if len(normalized) < 3:
+            continue
+
+        if len(normalized) > 32:
+            continue
+
+        if normalized in STOP_WORDS:
+            continue
+
+        normalized_tokens.append(normalized)
+
+    return list(dict.fromkeys(normalized_tokens))[:16]
 
 
 def _search_index(
@@ -204,54 +264,95 @@ def _rank_candidate_files(
     search_results: list[dict[str, Any]],
     max_candidates: int = 12,
 ) -> list[dict[str, Any]]:
-    scores: Counter[str] = Counter()
+    matched_queries: dict[str, set[str]] = {}
+    matched_symbols: dict[str, set[str]] = {}
     reasons: dict[str, set[str]] = {}
 
     for result in search_results:
         path = result["path"]
         query = result["query"]
 
-        scores[path] += 3
+        matched_queries.setdefault(path, set()).add(query)
         reasons.setdefault(path, set()).add(
             f"検索語「{query}」に一致"
         )
 
-        if result.get("symbol_name"):
-            scores[path] += 2
+        symbol_name = result.get("symbol_name")
+
+        if symbol_name:
+            matched_symbols.setdefault(path, set()).add(
+                symbol_name
+            )
             reasons[path].add(
-                f"シンボル「{result['symbol_name']}」"
+                f"シンボル「{symbol_name}」"
             )
 
+    ranked: list[dict[str, Any]] = []
+
+    for path, queries in matched_queries.items():
         lowered = path.lower()
 
+        score = min(len(queries), 5) * 6
+        score += min(
+            len(matched_symbols.get(path, set())),
+            5,
+        ) * 2
+
+        if lowered.endswith(
+            ("backend/app/main.py", "frontend/src/app/page.tsx")
+        ):
+            score += 8
+            reasons[path].add("アプリ入口")
+
         if "/api/" in lowered or "/routers/" in lowered:
-            scores[path] += 2
+            score += 4
             reasons[path].add("API層")
 
         if "/services/" in lowered:
-            scores[path] += 2
+            score += 5
             reasons[path].add("Service層")
 
-        if "/app/" in lowered and path.endswith("page.tsx"):
-            scores[path] += 2
+        if "/core/" in lowered:
+            score += 4
+            reasons[path].add("Core層")
+
+        if path.endswith("page.tsx"):
+            score += 4
             reasons[path].add("画面ルート")
 
+        if any(
+            keyword in lowered
+            for keyword in [
+                "auth",
+                "dashboard",
+                "settings",
+                "health",
+            ]
+        ):
+            score += 3
+            reasons[path].add("主要機能")
+
         if "test" in lowered:
-            scores[path] += 1
+            score += 3
             reasons[path].add("テスト関連")
 
-    ranked = []
-
-    for path, score in scores.most_common(max_candidates):
         ranked.append(
             {
                 "path": path,
                 "score": score,
+                "matched_query_count": len(queries),
                 "reasons": sorted(reasons[path]),
             }
         )
 
-    return ranked
+    ranked.sort(
+        key=lambda item: (
+            -item["score"],
+            item["path"],
+        )
+    )
+
+    return ranked[:max_candidates]
 
 
 def _analyze_candidates(
@@ -374,6 +475,7 @@ def _build_analysis_summary(
         "objective": objective,
         "search_terms": search_terms,
         "candidate_count": len(analyzed),
+        "analysis_version": "mission-analysis-v0.3",
         "high_risk_count": len(high_risk),
         "medium_risk_count": len(medium_risk),
         "api_files": api_files,
