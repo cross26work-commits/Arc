@@ -11,6 +11,10 @@ from app.missions.analysis_runner import (
     MissionAnalysisError,
     run_mission_analysis,
 )
+from app.missions.planner_runner import (
+    MissionPlannerError,
+    run_mission_planner,
+)
 from app.missions.service import (
     MissionError,
     create_mission,
@@ -172,6 +176,24 @@ def analyze_mission_endpoint(
         return run_mission_analysis(mission_id)
     except (
         MissionAnalysisError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/plan",
+)
+def plan_mission_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return run_mission_planner(mission_id)
+    except (
+        MissionPlannerError,
         MissionError,
     ) as error:
         raise HTTPException(
