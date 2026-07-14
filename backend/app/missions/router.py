@@ -7,6 +7,10 @@ from app.missions.models import (
     MissionSummaryResponse,
     MissionTaskUpdate,
 )
+from app.missions.analysis_runner import (
+    MissionAnalysisError,
+    run_mission_analysis,
+)
 from app.missions.service import (
     MissionError,
     create_mission,
@@ -152,6 +156,24 @@ def advance_mission_endpoint(
             **advance_mission(mission_id)
         )
     except MissionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/analyze",
+)
+def analyze_mission_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return run_mission_analysis(mission_id)
+    except (
+        MissionAnalysisError,
+        MissionError,
+    ) as error:
         raise HTTPException(
             status_code=400,
             detail=str(error),
