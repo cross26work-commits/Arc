@@ -42,6 +42,18 @@ class MissionStatusUpdate(BaseModel):
     )
 
 
+class MissionApprovalDecision(BaseModel):
+    reason: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+    decided_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+
+
 class MissionTaskResponse(BaseModel):
     id: int
     mission_id: int

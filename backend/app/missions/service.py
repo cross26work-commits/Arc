@@ -6,8 +6,10 @@ from typing import Any
 
 from app.database import get_connection
 from app.missions.models import (
+    MissionApprovalDecision,
     MissionCreate,
     MissionStatusUpdate,
+    MissionTaskUpdate,
 )
 from app.missions.planner import generate_initial_plan
 
@@ -845,6 +847,340 @@ def update_mission_task(
     )
 
     return get_mission(mission_id)
+
+
+
+def _get_task_by_type(
+    *,
+    mission_id: int,
+    task_type: str,
+):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT *
+            FROM mission_tasks
+            WHERE mission_id = ?
+              AND task_type = ?
+            ORDER BY position ASC
+            LIMIT 1
+            """,
+            (
+                mission_id,
+                task_type,
+            ),
+        ).fetchone()
+
+
+def approve_mission(
+    *,
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> dict[str, Any]:
+    mission = _mission_row(mission_id)
+
+    if mission is None:
+        raise MissionError(
+            "Missionが見つかりません。"
+        )
+
+    if mission["status"] in {
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED",
+    }:
+        raise MissionError(
+            "完了・中止・失敗済みMissionは承認できません。"
+        )
+
+    planning_task = _get_task_by_type(
+        mission_id=mission_id,
+        task_type="PLANNING",
+    )
+    approval_task = _get_task_by_type(
+        mission_id=mission_id,
+        task_type="APPROVAL",
+    )
+
+    if planning_task is None:
+        raise MissionError(
+            "PLANNING Taskが見つかりません。"
+        )
+
+    if approval_task is None:
+        raise MissionError(
+            "APPROVAL Taskが見つかりません。"
+        )
+
+    if planning_task["status"] != "COMPLETED":
+        raise MissionError(
+            "PLANNING Taskが完了していません。"
+        )
+
+    if approval_task["status"] != "READY":
+        if approval_task["status"] == "COMPLETED":
+            raise MissionError(
+                "このMissionは既に承認されています。"
+            )
+
+        raise MissionError(
+            "APPROVAL Taskは承認可能な状態ではありません。"
+        )
+
+    decision_result = json.dumps(
+        {
+            "decision": "APPROVED",
+            "reason": (
+                payload.reason.strip()
+                if payload.reason
+                else None
+            ),
+            "decided_by": payload.decided_by.strip(),
+            "decided_at": _now(),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    update_mission_task(
+        mission_id=mission_id,
+        task_id=approval_task["id"],
+        payload=MissionTaskUpdate(
+            status="COMPLETED",
+            result=decision_result,
+        ),
+    )
+
+    approved_task_result = get_mission(mission_id)
+    now = _now()
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'APPROVED',
+                next_action = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                (
+                    "承認済みです。"
+                    "Implementation Runnerを開始してください。"
+                ),
+                now,
+                mission_id,
+            ),
+        )
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="INFO",
+        event_type="STATUS_CHANGED",
+        message=(
+            "Mission状態を"
+            f"{approved_task_result['status']}から"
+            "APPROVEDへ変更しました。"
+        ),
+        metadata={
+            "previous_status": approved_task_result["status"],
+            "new_status": "APPROVED",
+        },
+    )
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="INFO",
+        event_type="MISSION_APPROVED",
+        message="Missionの実装計画を承認しました。",
+        metadata={
+            "decision": "APPROVED",
+            "reason": (
+                payload.reason.strip()
+                if payload.reason
+                else None
+            ),
+            "decided_by": payload.decided_by.strip(),
+        },
+    )
+
+    return get_mission(mission_id)
+
+
+def reject_mission(
+    *,
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> dict[str, Any]:
+    mission = _mission_row(mission_id)
+
+    if mission is None:
+        raise MissionError(
+            "Missionが見つかりません。"
+        )
+
+    if mission["status"] in {
+        "COMPLETED",
+        "CANCELLED",
+    }:
+        raise MissionError(
+            "完了または中止済みMissionは却下できません。"
+        )
+
+    planning_task = _get_task_by_type(
+        mission_id=mission_id,
+        task_type="PLANNING",
+    )
+    approval_task = _get_task_by_type(
+        mission_id=mission_id,
+        task_type="APPROVAL",
+    )
+
+    if planning_task is None:
+        raise MissionError(
+            "PLANNING Taskが見つかりません。"
+        )
+
+    if approval_task is None:
+        raise MissionError(
+            "APPROVAL Taskが見つかりません。"
+        )
+
+    if planning_task["status"] != "COMPLETED":
+        raise MissionError(
+            "PLANNING Taskが完了していません。"
+        )
+
+    if approval_task["status"] != "READY":
+        raise MissionError(
+            "APPROVAL Taskは却下可能な状態ではありません。"
+        )
+
+    reason = (
+        payload.reason.strip()
+        if payload.reason
+        else "承認者により再計画が要求されました。"
+    )
+    now = _now()
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'READY',
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                now,
+                planning_task["id"],
+                mission_id,
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'PENDING',
+                result = NULL,
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                now,
+                approval_task["id"],
+                mission_id,
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'PENDING',
+                updated_at = ?
+            WHERE mission_id = ?
+              AND position > ?
+            """,
+            (
+                now,
+                mission_id,
+                approval_task["position"],
+            ),
+        )
+
+        progress_rows = connection.execute(
+            """
+            SELECT status
+            FROM mission_tasks
+            WHERE mission_id = ?
+            ORDER BY position ASC
+            """,
+            (mission_id,),
+        ).fetchall()
+
+        completed_count = sum(
+            1
+            for row in progress_rows
+            if row["status"] in {
+                "COMPLETED",
+                "SKIPPED",
+            }
+        )
+
+        progress = (
+            round(
+                completed_count
+                / len(progress_rows)
+                * 100
+            )
+            if progress_rows
+            else 0
+        )
+
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'PLANNED',
+                progress = ?,
+                next_action = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                progress,
+                "却下理由を反映して実装計画を再作成する",
+                now,
+                mission_id,
+            ),
+        )
+
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="WARNING",
+        event_type="MISSION_REJECTED",
+        message=(
+            "Missionの実装計画を却下し、"
+            "PLANNING Taskを再実行可能にしました。"
+        ),
+        metadata={
+            "decision": "REJECTED",
+            "reason": reason,
+            "decided_by": payload.decided_by.strip(),
+        },
+    )
+
+    return get_mission(mission_id)
+
 
 
 def advance_mission(

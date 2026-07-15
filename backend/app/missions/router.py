@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.missions.models import (
+    MissionApprovalDecision,
     MissionCreate,
     MissionResponse,
     MissionStatusUpdate,
@@ -17,13 +18,15 @@ from app.missions.planner_runner import (
 )
 from app.missions.service import (
     MissionError,
+    advance_mission,
+    approve_mission,
     create_mission,
     get_current_mission,
     get_mission,
     list_missions,
+    reject_mission,
     update_mission_status,
     update_mission_task,
-    advance_mission,
 )
 
 
@@ -144,6 +147,50 @@ def update_mission_task_endpoint(
     except MissionError as error:
         raise HTTPException(
             status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/approve",
+    response_model=MissionResponse,
+)
+def approve_mission_endpoint(
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> MissionResponse:
+    try:
+        return MissionResponse(
+            **approve_mission(
+                mission_id=mission_id,
+                payload=payload,
+            )
+        )
+    except MissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/reject",
+    response_model=MissionResponse,
+)
+def reject_mission_endpoint(
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> MissionResponse:
+    try:
+        return MissionResponse(
+            **reject_mission(
+                mission_id=mission_id,
+                payload=payload,
+            )
+        )
+    except MissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
 
