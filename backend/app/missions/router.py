@@ -20,6 +20,10 @@ from app.missions.planner_runner import (
     MissionPlannerError,
     run_mission_planner,
 )
+from app.missions.reporting_runner import (
+    MissionReportingError,
+    run_mission_reporting_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -412,6 +416,26 @@ def commit_mission_changes_endpoint(
         )
     except (
         MissionCommitError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/report",
+)
+def report_mission_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return run_mission_reporting_safe(
+            mission_id
+        )
+    except (
+        MissionReportingError,
         MissionError,
     ) as error:
         raise HTTPException(
