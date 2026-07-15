@@ -135,6 +135,22 @@ class MissionPatchGenerateRequest(BaseModel):
     )
 
 
+class MissionCommitRequest(BaseModel):
+    confirmation: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+    message: str = Field(
+        min_length=3,
+        max_length=500,
+    )
+    committed_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+
+
 class MissionTaskResponse(BaseModel):
     id: int
     mission_id: int
