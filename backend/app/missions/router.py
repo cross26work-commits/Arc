@@ -24,6 +24,10 @@ from app.missions.reporting_runner import (
     MissionReportingError,
     run_mission_reporting_safe,
 )
+from app.missions.self_repair_planner import (
+    MissionSelfRepairPlannerError,
+    run_self_repair_planner_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -372,6 +376,26 @@ def verify_mission_endpoint(
         )
     except (
         MissionVerificationError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/repair-plan",
+)
+def create_mission_repair_plan_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return run_self_repair_planner_safe(
+            mission_id
+        )
+    except (
+        MissionSelfRepairPlannerError,
         MissionError,
     ) as error:
         raise HTTPException(

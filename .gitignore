@@ -40,3 +40,6 @@ backups/
 
 # Arc implementation runtime backups
 data/implementation_backups/
+
+# Arc Self Repair runtime plans
+data/repair_plans/
