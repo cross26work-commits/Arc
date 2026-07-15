@@ -2394,44 +2394,19 @@ def apply_mission_implementation_patch(
             "自動復元しました。"
         )
 
-    with get_connection() as connection:
-        connection.execute(
-            """
-            UPDATE mission_tasks
-            SET
-                result = ?,
-                updated_at = ?
-            WHERE id = ?
-              AND mission_id = ?
-            """,
-            (
-                result_text,
-                applied_at,
-                implementation_task["id"],
-                mission_id,
+    updated_mission = update_mission_task(
+        mission_id=mission_id,
+        task_id=implementation_task["id"],
+        payload=MissionTaskUpdate(
+            status="COMPLETED",
+            result=result_text,
+            target_path=(
+                apply_result["changed_files"][0]
+                if apply_result["changed_files"]
+                else None
             ),
-        )
-
-        connection.execute(
-            """
-            UPDATE missions
-            SET
-                status = 'RUNNING',
-                next_action = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                (
-                    "Patch適用完了。"
-                    "Verification Runnerを実行してください。"
-                ),
-                applied_at,
-                mission_id,
-            ),
-        )
-
-        connection.commit()
+        ),
+    )
 
     add_mission_log(
         mission_id=mission_id,
@@ -2463,7 +2438,7 @@ def apply_mission_implementation_patch(
     )
 
     return {
-        "mission": get_mission(mission_id),
+        "mission": updated_mission,
         "patch_apply": apply_record,
         "implementation": updated_result,
     }

@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from app.database import get_connection
+from app.missions.implementation_runner import (
+    _load_backup_manifest,
+    _restore_manifest_files,
+)
 from app.missions.models import MissionTaskUpdate
 from app.missions.service import (
     MissionError,
@@ -566,6 +570,280 @@ def run_verification_commands(
     }
 
 
+
+def _calculate_progress_in_connection(
+    connection,
+    mission_id: int,
+) -> int:
+    rows = connection.execute(
+        """
+        SELECT status
+        FROM mission_tasks
+        WHERE mission_id = ?
+        ORDER BY position ASC
+        """,
+        (mission_id,),
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    completed = sum(
+        1
+        for row in rows
+        if row["status"] in {
+            "COMPLETED",
+            "SKIPPED",
+        }
+    )
+
+    return round(
+        completed
+        / len(rows)
+        * 100
+    )
+
+
+def _rollback_failed_verification(
+    *,
+    mission_id: int,
+    project_root: Path,
+    implementation_task: dict[str, Any],
+    verification_task: dict[str, Any],
+    implementation_result: dict[str, Any],
+    verification_result: dict[str, Any],
+) -> dict[str, Any]:
+    run_root, manifest = (
+        _load_backup_manifest(
+            implementation_result
+        )
+    )
+
+    restore_result = _restore_manifest_files(
+        project_root=project_root,
+        run_root=run_root,
+        manifest=manifest,
+    )
+
+    if not restore_result["working_tree_clean"]:
+        raise MissionVerificationError(
+            "Verification失敗後の自動復元に"
+            "失敗しました。残存差分: "
+            f"{restore_result['remaining_changes']}"
+        )
+
+    rollback_at = _now()
+
+    rolled_back_implementation = {
+        **implementation_result,
+        "implementation_version": (
+            "mission-implementation-v0.4"
+        ),
+        "mode": "ROLLED_BACK",
+        "write_enabled": False,
+        "files_modified": 0,
+        "modified_files": [],
+        "rollback": {
+            "rolled_back": True,
+            "rolled_back_at": rollback_at,
+            "reason": "VERIFICATION_FAILED",
+            "failure_category": (
+                verification_result[
+                    "failure_category"
+                ]
+            ),
+            "restored_file_count": (
+                restore_result[
+                    "restored_file_count"
+                ]
+            ),
+            "restored_files": (
+                restore_result[
+                    "restored_files"
+                ]
+            ),
+            "working_tree_clean": True,
+        },
+        "last_verification_failure": {
+            "verification_version": (
+                verification_result[
+                    "verification_version"
+                ]
+            ),
+            "failure_category": (
+                verification_result[
+                    "failure_category"
+                ]
+            ),
+            "executed_command_count": (
+                verification_result[
+                    "executed_command_count"
+                ]
+            ),
+            "failed_at": rollback_at,
+        },
+        "next_stage": (
+            "失敗原因を解析し、Patchを再生成する"
+        ),
+    }
+
+    implementation_text = json.dumps(
+        rolled_back_implementation,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    verification_text = json.dumps(
+        verification_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(implementation_text) > 95000:
+        raise MissionVerificationError(
+            "Rollback後のImplementation結果が"
+            "保存上限を超えました。"
+        )
+
+    if len(verification_text) > 95000:
+        raise MissionVerificationError(
+            "Verification失敗結果が"
+            "保存上限を超えました。"
+        )
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'READY',
+                result = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                implementation_text,
+                rollback_at,
+                implementation_task["id"],
+                mission_id,
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'PENDING',
+                result = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                verification_text,
+                rollback_at,
+                verification_task["id"],
+                mission_id,
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                status = 'PENDING',
+                updated_at = ?
+            WHERE mission_id = ?
+              AND position > ?
+            """,
+            (
+                rollback_at,
+                mission_id,
+                verification_task["position"],
+            ),
+        )
+
+        progress = _calculate_progress_in_connection(
+            connection,
+            mission_id,
+        )
+
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'APPROVED',
+                progress = ?,
+                next_action = ?,
+                error_count = error_count + 1,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                progress,
+                (
+                    "Verification失敗。"
+                    "復元済みです。"
+                    "失敗原因を解析して"
+                    "Patchを再生成してください。"
+                ),
+                rollback_at,
+                mission_id,
+            ),
+        )
+
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="ERROR",
+        event_type=(
+            "MISSION_VERIFICATION_FAILED_ROLLED_BACK"
+        ),
+        message=(
+            "Verificationに失敗したため、"
+            "変更前Backupから自動復元し、"
+            "IMPLEMENTATION Taskを"
+            "再試行可能状態へ戻しました。"
+        ),
+        metadata={
+            "verification_version": (
+                verification_result[
+                    "verification_version"
+                ]
+            ),
+            "failure_category": (
+                verification_result[
+                    "failure_category"
+                ]
+            ),
+            "executed_command_count": (
+                verification_result[
+                    "executed_command_count"
+                ]
+            ),
+            "restored_file_count": (
+                restore_result[
+                    "restored_file_count"
+                ]
+            ),
+            "working_tree_clean": True,
+            "implementation_status": "READY",
+            "verification_status": "PENDING",
+        },
+    )
+
+    return {
+        "mission": get_mission(mission_id),
+        "verification": verification_result,
+        "rollback": restore_result,
+        "implementation": (
+            rolled_back_implementation
+        ),
+    }
+
+
 def run_mission_verification(
     mission_id: int,
 ) -> dict[str, Any]:
@@ -666,58 +944,46 @@ def run_mission_verification(
         )
     )
 
+    if not verification_result["passed"]:
+        return _rollback_failed_verification(
+            mission_id=mission_id,
+            project_root=project_root,
+            implementation_task=implementation_task,
+            verification_task=verification_task,
+            implementation_result=implementation_result,
+            verification_result=verification_result,
+        )
+
     result_text = json.dumps(
         verification_result,
         ensure_ascii=False,
         separators=(",", ":"),
     )
 
-    final_status = (
-        "COMPLETED"
-        if verification_result["passed"]
-        else "FAILED"
-    )
-
     updated_mission = update_mission_task(
         mission_id=mission_id,
         task_id=verification_task["id"],
         payload=MissionTaskUpdate(
-            status=final_status,
+            status="COMPLETED",
             result=result_text,
         ),
     )
 
     add_mission_log(
         mission_id=mission_id,
-        level=(
-            "INFO"
-            if verification_result["passed"]
-            else "ERROR"
-        ),
+        level="INFO",
         event_type=(
             "MISSION_VERIFICATION_COMPLETED"
-            if verification_result["passed"]
-            else "MISSION_VERIFICATION_FAILED"
         ),
         message=(
             "Verification Runnerが"
-            + (
-                "全検証に成功しました。"
-                if verification_result["passed"]
-                else (
-                    "検証に失敗しました。"
-                    f"分類: "
-                    f"{verification_result['failure_category']}"
-                )
-            )
+            "全検証に成功しました。"
         ),
         metadata={
             "verification_version": (
-                "mission-verification-v0.1"
+                "mission-verification-v0.2"
             ),
-            "passed": verification_result[
-                "passed"
-            ],
+            "passed": True,
             "requested_command_count": (
                 verification_result[
                     "requested_command_count"
@@ -728,11 +994,7 @@ def run_mission_verification(
                     "executed_command_count"
                 ]
             ),
-            "failure_category": (
-                verification_result[
-                    "failure_category"
-                ]
-            ),
+            "failure_category": None,
         },
     )
 
