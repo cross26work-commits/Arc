@@ -41,6 +41,10 @@ from app.missions.repair_patch_apply import (
     MissionRepairPatchApplyError,
     apply_repair_patch_safe,
 )
+from app.missions.repair_verification_runner import (
+    MissionRepairVerificationError,
+    run_repair_verification_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -475,6 +479,27 @@ def apply_mission_repair_patch_endpoint(
         )
     except (
         MissionRepairPatchApplyError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+
+@router.post(
+    "/{mission_id}/repair-verify",
+)
+def verify_mission_repair_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return run_repair_verification_safe(
+            mission_id
+        )
+    except (
+        MissionRepairVerificationError,
         MissionError,
     ) as error:
         raise HTTPException(
