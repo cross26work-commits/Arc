@@ -37,3 +37,6 @@ backups/
 .env
 .env.*
 !.env.example
+
+# Arc implementation runtime backups
+data/implementation_backups/
