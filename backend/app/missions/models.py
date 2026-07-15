@@ -90,6 +90,51 @@ class MissionPatchApplyRequest(BaseModel):
     )
 
 
+class MissionPatchEdit(BaseModel):
+    operation: Literal[
+        "REPLACE_UNIQUE",
+        "APPEND",
+        "INSERT_BEFORE",
+        "INSERT_AFTER",
+    ]
+    path: str = Field(
+        min_length=1,
+        max_length=1000,
+    )
+    old_text: str | None = Field(
+        default=None,
+        max_length=100000,
+    )
+    new_text: str | None = Field(
+        default=None,
+        max_length=100000,
+    )
+    anchor: str | None = Field(
+        default=None,
+        max_length=100000,
+    )
+    text: str | None = Field(
+        default=None,
+        max_length=100000,
+    )
+
+
+class MissionPatchGenerateRequest(BaseModel):
+    edits: list[MissionPatchEdit] = Field(
+        min_length=1,
+        max_length=100,
+    )
+    generated_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+
+
 class MissionTaskResponse(BaseModel):
     id: int
     mission_id: int

@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from app.missions.models import (
     MissionApprovalDecision,
     MissionPatchApplyRequest,
+    MissionPatchGenerateRequest,
     MissionPatchCheckRequest,
     MissionCreate,
     MissionResponse,
@@ -17,6 +18,10 @@ from app.missions.analysis_runner import (
 from app.missions.planner_runner import (
     MissionPlannerError,
     run_mission_planner,
+)
+from app.missions.patch_generator import (
+    MissionPatchGeneratorError,
+    generate_mission_patch_safe,
 )
 from app.missions.verification_runner import (
     MissionVerificationError,
@@ -358,6 +363,28 @@ def verify_mission_endpoint(
         )
     except (
         MissionVerificationError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/implementation/patch-generate",
+)
+def generate_mission_patch_endpoint(
+    mission_id: int,
+    payload: MissionPatchGenerateRequest,
+) -> dict:
+    try:
+        return generate_mission_patch_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionPatchGeneratorError,
         MissionError,
     ) as error:
         raise HTTPException(
