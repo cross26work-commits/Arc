@@ -33,6 +33,10 @@ from app.missions.repair_request_builder import (
     MissionRepairRequestError,
     create_repair_patch_request_safe,
 )
+from app.missions.repair_patch_connector import (
+    MissionRepairPatchConnectorError,
+    connect_repair_request_to_patch_generator_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -423,6 +427,29 @@ def create_mission_repair_request_endpoint(
         )
     except (
         MissionRepairRequestError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+
+@router.post(
+    "/{mission_id}/repair-patch-generate",
+)
+def generate_mission_repair_patch_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return (
+            connect_repair_request_to_patch_generator_safe(
+                mission_id
+            )
+        )
+    except (
+        MissionRepairPatchConnectorError,
         MissionError,
     ) as error:
         raise HTTPException(
