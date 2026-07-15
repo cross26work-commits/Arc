@@ -18,6 +18,7 @@ from app.missions.planner_runner import (
 )
 from app.missions.implementation_runner import (
     MissionImplementationError,
+    create_mission_implementation_backup_safe,
     run_mission_implementation_safe,
 )
 from app.missions.service import (
@@ -261,6 +262,26 @@ def implement_mission_endpoint(
 ) -> dict:
     try:
         return run_mission_implementation_safe(
+            mission_id
+        )
+    except (
+        MissionImplementationError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/implementation/backup",
+)
+def backup_mission_implementation_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return create_mission_implementation_backup_safe(
             mission_id
         )
     except (

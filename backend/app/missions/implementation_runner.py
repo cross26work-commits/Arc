@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.database import get_connection
 from app.missions.models import MissionTaskUpdate
@@ -18,6 +22,22 @@ from app.projects.reader import EXCLUDED_NAMES
 
 class MissionImplementationError(Exception):
     """Implementation Runnerの実行に失敗した場合の例外。"""
+
+
+ARC_ROOT = Path(__file__).resolve().parents[3]
+IMPLEMENTATION_BACKUP_ROOT = (
+    ARC_ROOT
+    / "data"
+    / "implementation_backups"
+)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _run_git(
@@ -506,6 +526,29 @@ def run_mission_implementation(
         ),
     )
 
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'APPROVED',
+                next_action = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                (
+                    "Dry Run完了。"
+                    "Backup Engineを実行してください。"
+                ),
+                _now(),
+                mission_id,
+            ),
+        )
+        connection.commit()
+
+    updated_mission = get_mission(mission_id)
+
     add_mission_log(
         mission_id=mission_id,
         level="INFO",
@@ -541,6 +584,453 @@ def run_mission_implementation(
         "mission": updated_mission,
         "implementation": dry_run,
     }
+
+
+
+def _load_implementation_result(
+    implementation_task: dict[str, Any],
+) -> dict[str, Any]:
+    raw_result = implementation_task.get("result")
+
+    if not raw_result:
+        raise MissionImplementationError(
+            "Implementation Dry Run結果がありません。"
+        )
+
+    try:
+        result = json.loads(raw_result)
+    except json.JSONDecodeError as error:
+        raise MissionImplementationError(
+            "Implementation結果のJSONを"
+            "読み取れません。"
+        ) from error
+
+    if not isinstance(result, dict):
+        raise MissionImplementationError(
+            "Implementation結果の形式が不正です。"
+        )
+
+    if result.get("mode") != "DRY_RUN":
+        raise MissionImplementationError(
+            "Backup EngineはDry Run完了後に"
+            "実行してください。"
+        )
+
+    return result
+
+
+def _safe_backup_target(
+    *,
+    run_root: Path,
+    relative_path: str,
+) -> Path:
+    before_root = (
+        run_root
+        / "before"
+    ).resolve()
+
+    target = (
+        before_root
+        / relative_path
+    ).resolve()
+
+    if not _is_inside_project(
+        before_root,
+        target,
+    ):
+        raise MissionImplementationError(
+            "Backup保存先が許可範囲外です。"
+        )
+
+    return target
+
+
+def create_mission_implementation_backup(
+    mission_id: int,
+) -> dict[str, Any]:
+    mission = get_mission(mission_id)
+
+    if mission["status"] not in {
+        "APPROVED",
+        "RUNNING",
+    }:
+        raise MissionImplementationError(
+            "承認済みMissionのみBackup可能です。"
+        )
+
+    planning_task = _task_by_type(
+        mission,
+        "PLANNING",
+    )
+    approval_task = _task_by_type(
+        mission,
+        "APPROVAL",
+    )
+    implementation_task = _task_by_type(
+        mission,
+        "IMPLEMENTATION",
+    )
+
+    if planning_task["status"] != "COMPLETED":
+        raise MissionImplementationError(
+            "PLANNING Taskが完了していません。"
+        )
+
+    if approval_task["status"] != "COMPLETED":
+        raise MissionImplementationError(
+            "APPROVAL Taskが完了していません。"
+        )
+
+    if implementation_task["status"] != "RUNNING":
+        raise MissionImplementationError(
+            "Implementation Dry Runが"
+            "完了していません。"
+        )
+
+    implementation_result = (
+        _load_implementation_result(
+            implementation_task
+        )
+    )
+
+    project = _get_project(
+        mission["project_id"]
+    )
+
+    if project is None:
+        raise MissionImplementationError(
+            "Projectが見つかりません。"
+        )
+
+    project_root = Path(
+        project["path"]
+    ).expanduser().resolve()
+
+    if not project_root.exists():
+        raise MissionImplementationError(
+            "Projectフォルダが存在しません。"
+        )
+
+    current_branch = _run_git(
+        project_root,
+        "branch",
+        "--show-current",
+    )
+
+    expected_branch = (
+        implementation_result
+        .get("git", {})
+        .get("branch_name")
+    )
+
+    if current_branch != expected_branch:
+        raise MissionImplementationError(
+            "Mission専用Branchではありません。"
+        )
+
+    dirty_status = _run_git(
+        project_root,
+        "status",
+        "--porcelain",
+    )
+
+    if dirty_status:
+        raise MissionImplementationError(
+            "Projectに未保存の変更があります。"
+        )
+
+    selected_files = (
+        implementation_result
+        .get("selected_files")
+    )
+
+    if not isinstance(selected_files, list):
+        raise MissionImplementationError(
+            "Backup対象ファイルがありません。"
+        )
+
+    validated_files = _validate_selected_files(
+        project_root=project_root,
+        selected_files=selected_files,
+    )
+
+    run_id = (
+        datetime.now(timezone.utc)
+        .strftime("%Y%m%dT%H%M%S")
+        + "-"
+        + uuid4().hex[:8]
+    )
+
+    mission_root = (
+        IMPLEMENTATION_BACKUP_ROOT
+        / f"mission-{mission_id}"
+    )
+
+    run_root = (
+        mission_root
+        / run_id
+    )
+
+    if run_root.exists():
+        raise MissionImplementationError(
+            "同じBackup実行IDが既に存在します。"
+        )
+
+    run_root.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
+
+    manifest_files: list[dict[str, Any]] = []
+
+    try:
+        for item in validated_files:
+            relative_path = item["path"]
+
+            source = (
+                project_root
+                / relative_path
+            ).resolve()
+
+            if not _is_inside_project(
+                project_root,
+                source,
+            ):
+                raise MissionImplementationError(
+                    "Project外ファイルはBackupできません。"
+                )
+
+            data = source.read_bytes()
+
+            backup_target = _safe_backup_target(
+                run_root=run_root,
+                relative_path=relative_path,
+            )
+
+            backup_target.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            backup_target.write_bytes(data)
+
+            backup_data = backup_target.read_bytes()
+
+            source_hash = _sha256_bytes(data)
+            backup_hash = _sha256_bytes(
+                backup_data
+            )
+
+            if source_hash != backup_hash:
+                raise MissionImplementationError(
+                    "BackupファイルのHash検証に"
+                    f"失敗しました: {relative_path}"
+                )
+
+            manifest_files.append(
+                {
+                    "path": relative_path,
+                    "sha256": source_hash,
+                    "size_bytes": len(data),
+                    "backup_path": (
+                        backup_target
+                        .relative_to(run_root)
+                        .as_posix()
+                    ),
+                    "verified": True,
+                }
+            )
+
+        manifest = {
+            "backup_version": (
+                "mission-backup-v0.2"
+            ),
+            "mission_id": mission_id,
+            "project_id": project["id"],
+            "project_name": project["name"],
+            "project_path": str(project_root),
+            "run_id": run_id,
+            "created_at": _now(),
+            "git": {
+                "branch": current_branch,
+                "head": _run_git(
+                    project_root,
+                    "rev-parse",
+                    "HEAD",
+                ),
+                "working_tree_clean": True,
+            },
+            "file_count": len(
+                manifest_files
+            ),
+            "files": manifest_files,
+            "restore_ready": True,
+        }
+
+        manifest_path = (
+            run_root
+            / "manifest.json"
+        )
+
+        manifest_path.write_text(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        stored_manifest = json.loads(
+            manifest_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        if (
+            stored_manifest["file_count"]
+            != len(manifest_files)
+        ):
+            raise MissionImplementationError(
+                "manifest.jsonの検証に失敗しました。"
+            )
+
+    except Exception:
+        shutil.rmtree(
+            run_root,
+            ignore_errors=True,
+        )
+        raise
+
+    updated_result = {
+        **implementation_result,
+        "implementation_version": (
+            "mission-implementation-v0.2"
+        ),
+        "mode": "BACKUP_READY",
+        "backup": {
+            "run_id": run_id,
+            "root_path": str(run_root),
+            "manifest_path": str(
+                run_root
+                / "manifest.json"
+            ),
+            "file_count": len(
+                manifest_files
+            ),
+            "restore_ready": True,
+        },
+        "write_enabled": False,
+        "files_modified": 0,
+        "next_stage": (
+            "Unified Diff生成と"
+            "git apply --checkを実行する"
+        ),
+    }
+
+    result_text = json.dumps(
+        updated_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(result_text) > 95000:
+        shutil.rmtree(
+            run_root,
+            ignore_errors=True,
+        )
+        raise MissionImplementationError(
+            "Backup結果が保存上限を超えました。"
+        )
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                result = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                result_text,
+                _now(),
+                implementation_task["id"],
+                mission_id,
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'APPROVED',
+                next_action = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                (
+                    "Backup完了。"
+                    "Patch生成・検証へ進んでください。"
+                ),
+                _now(),
+                mission_id,
+            ),
+        )
+
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="INFO",
+        event_type=(
+            "MISSION_IMPLEMENTATION_BACKUP_COMPLETED"
+        ),
+        message=(
+            f"実装対象{len(manifest_files)}件の"
+            "変更前Backupを作成し、"
+            "SHA-256検証を完了しました。"
+        ),
+        metadata={
+            "backup_version": (
+                "mission-backup-v0.2"
+            ),
+            "run_id": run_id,
+            "file_count": len(
+                manifest_files
+            ),
+            "restore_ready": True,
+            "files_modified": 0,
+        },
+    )
+
+    return {
+        "mission": get_mission(mission_id),
+        "backup": manifest,
+        "implementation": updated_result,
+    }
+
+
+def create_mission_implementation_backup_safe(
+    mission_id: int,
+) -> dict[str, Any]:
+    try:
+        return create_mission_implementation_backup(
+            mission_id
+        )
+    except MissionImplementationError:
+        raise
+    except MissionError as error:
+        raise MissionImplementationError(
+            str(error)
+        ) from error
+    except Exception as error:
+        raise MissionImplementationError(
+            "Backup Engineで予期しない"
+            f"エラーが発生しました: {error}"
+        ) from error
 
 
 def run_mission_implementation_safe(
