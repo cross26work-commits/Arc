@@ -1749,28 +1749,82 @@ def check_mission_implementation_patch_safe(
 def _git_changed_paths(
     project_root: Path,
 ) -> list[str]:
-    output = _run_git(
-        project_root,
-        "status",
-        "--porcelain",
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "status",
+                "--porcelain=v1",
+                "-z",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except FileNotFoundError as error:
+        raise MissionImplementationError(
+            "Gitコマンドが見つかりません。"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise MissionImplementationError(
+            "Git状態確認がタイムアウトしました。"
+        ) from error
+    except subprocess.CalledProcessError as error:
+        detail = (
+            error.stderr.decode(
+                "utf-8",
+                errors="replace",
+            ).strip()
+            or str(error)
+        )
+        raise MissionImplementationError(
+            f"Git状態確認に失敗しました: {detail}"
+        ) from error
 
+    entries = completed.stdout.split(b"\0")
     paths: list[str] = []
+    index = 0
 
-    for line in output.splitlines():
-        if len(line) < 4:
+    while index < len(entries):
+        entry = entries[index]
+
+        if not entry:
+            index += 1
             continue
 
-        raw_path = line[3:].strip()
+        decoded = entry.decode(
+            "utf-8",
+            errors="replace",
+        )
 
-        if " -> " in raw_path:
-            raw_path = raw_path.split(
-                " -> ",
-                1,
-            )[1].strip()
+        if len(decoded) < 4:
+            index += 1
+            continue
 
-        if raw_path and raw_path not in paths:
-            paths.append(raw_path)
+        status_code = decoded[:2]
+        raw_path = decoded[3:]
+
+        if status_code[0] in {"R", "C"}:
+            index += 1
+
+            if index >= len(entries):
+                raise MissionImplementationError(
+                    "Git rename情報の形式が不正です。"
+                )
+
+            raw_path = entries[index].decode(
+                "utf-8",
+                errors="replace",
+            )
+
+        normalized = raw_path.strip()
+
+        if normalized and normalized not in paths:
+            paths.append(normalized)
+
+        index += 1
 
     return paths
 
