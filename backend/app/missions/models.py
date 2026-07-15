@@ -54,6 +54,22 @@ class MissionApprovalDecision(BaseModel):
     )
 
 
+class MissionPatchCheckRequest(BaseModel):
+    patch_text: str = Field(
+        min_length=1,
+        max_length=500000,
+    )
+    generated_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+
+
 class MissionTaskResponse(BaseModel):
     id: int
     mission_id: int

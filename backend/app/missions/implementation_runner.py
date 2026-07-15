@@ -10,7 +10,10 @@ from typing import Any
 from uuid import uuid4
 
 from app.database import get_connection
-from app.missions.models import MissionTaskUpdate
+from app.missions.models import (
+    MissionPatchCheckRequest,
+    MissionTaskUpdate,
+)
 from app.missions.service import (
     MissionError,
     add_mission_log,
@@ -610,10 +613,17 @@ def _load_implementation_result(
             "Implementation結果の形式が不正です。"
         )
 
-    if result.get("mode") != "DRY_RUN":
+    allowed_modes = {
+        "DRY_RUN",
+        "BACKUP_READY",
+        "PATCH_CHECKED",
+    }
+
+    if result.get("mode") not in allowed_modes:
         raise MissionImplementationError(
-            "Backup EngineはDry Run完了後に"
-            "実行してください。"
+            "Implementation結果の状態が"
+            "現在の処理に対応していません: "
+            f"{result.get('mode')}"
         )
 
     return result
@@ -1029,6 +1039,707 @@ def create_mission_implementation_backup_safe(
     except Exception as error:
         raise MissionImplementationError(
             "Backup Engineで予期しない"
+            f"エラーが発生しました: {error}"
+        ) from error
+
+
+
+def _load_backup_manifest(
+    implementation_result: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    backup = implementation_result.get("backup")
+
+    if not isinstance(backup, dict):
+        raise MissionImplementationError(
+            "Backup情報が保存されていません。"
+        )
+
+    root_path = backup.get("root_path")
+    manifest_path = backup.get("manifest_path")
+
+    if not isinstance(root_path, str):
+        raise MissionImplementationError(
+            "Backup Root Pathが不正です。"
+        )
+
+    if not isinstance(manifest_path, str):
+        raise MissionImplementationError(
+            "Manifest Pathが不正です。"
+        )
+
+    run_root = Path(
+        root_path
+    ).expanduser().resolve()
+
+    manifest_file = Path(
+        manifest_path
+    ).expanduser().resolve()
+
+    backup_root = (
+        IMPLEMENTATION_BACKUP_ROOT
+        .expanduser()
+        .resolve()
+    )
+
+    if not _is_inside_project(
+        backup_root,
+        run_root,
+    ):
+        raise MissionImplementationError(
+            "Backup保存先がArc管理領域外です。"
+        )
+
+    if not _is_inside_project(
+        run_root,
+        manifest_file,
+    ):
+        raise MissionImplementationError(
+            "ManifestがBackup領域外です。"
+        )
+
+    if not manifest_file.exists():
+        raise MissionImplementationError(
+            "manifest.jsonが存在しません。"
+        )
+
+    try:
+        manifest = json.loads(
+            manifest_file.read_text(
+                encoding="utf-8"
+            )
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+    ) as error:
+        raise MissionImplementationError(
+            "manifest.jsonを読み取れません。"
+        ) from error
+
+    if not isinstance(manifest, dict):
+        raise MissionImplementationError(
+            "manifest.jsonの形式が不正です。"
+        )
+
+    if manifest.get("restore_ready") is not True:
+        raise MissionImplementationError(
+            "Backupが復元可能状態ではありません。"
+        )
+
+    return run_root, manifest
+
+
+def _verify_project_against_manifest(
+    *,
+    project_root: Path,
+    manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    files = manifest.get("files")
+
+    if not isinstance(files, list) or not files:
+        raise MissionImplementationError(
+            "Manifestにファイル情報がありません。"
+        )
+
+    verified: list[dict[str, Any]] = []
+
+    for item in files:
+        if not isinstance(item, dict):
+            raise MissionImplementationError(
+                "Manifest内のファイル形式が不正です。"
+            )
+
+        relative_path = item.get("path")
+        expected_hash = item.get("sha256")
+
+        if not isinstance(relative_path, str):
+            raise MissionImplementationError(
+                "Manifest内のPathが不正です。"
+            )
+
+        if not isinstance(expected_hash, str):
+            raise MissionImplementationError(
+                "Manifest内のHashが不正です。"
+            )
+
+        target = (
+            project_root
+            / relative_path
+        ).resolve()
+
+        if not _is_inside_project(
+            project_root,
+            target,
+        ):
+            raise MissionImplementationError(
+                "ManifestにProject外Pathがあります。"
+            )
+
+        if not target.exists() or not target.is_file():
+            raise MissionImplementationError(
+                "Backup後に対象ファイルが"
+                f"失われています: {relative_path}"
+            )
+
+        current_hash = _sha256_bytes(
+            target.read_bytes()
+        )
+
+        if current_hash != expected_hash:
+            raise MissionImplementationError(
+                "Backup作成後に対象ファイルが"
+                f"変更されています: {relative_path}"
+            )
+
+        verified.append(
+            {
+                "path": relative_path,
+                "sha256": current_hash,
+                "matched": True,
+            }
+        )
+
+    return verified
+
+
+def _extract_patch_paths(
+    patch_text: str,
+) -> list[str]:
+    paths: list[str] = []
+
+    for line in patch_text.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+
+        parts = line.split()
+
+        if len(parts) != 4:
+            raise MissionImplementationError(
+                "Unified Diffのdiff --git行が不正です。"
+            )
+
+        old_path = parts[2]
+        new_path = parts[3]
+
+        if not old_path.startswith("a/"):
+            raise MissionImplementationError(
+                "Patch旧Pathはa/で始めてください。"
+            )
+
+        if not new_path.startswith("b/"):
+            raise MissionImplementationError(
+                "Patch新Pathはb/で始めてください。"
+            )
+
+        old_relative = old_path[2:]
+        new_relative = new_path[2:]
+
+        if old_relative != new_relative:
+            raise MissionImplementationError(
+                "v0.3ではファイル名変更・移動を"
+                "許可していません。"
+            )
+
+        normalized = (
+            old_relative
+            .strip()
+            .lstrip("/")
+        )
+
+        if not normalized:
+            raise MissionImplementationError(
+                "Patch対象Pathが空です。"
+            )
+
+        if normalized not in paths:
+            paths.append(normalized)
+
+    if not paths:
+        raise MissionImplementationError(
+            "Patch内にdiff --git行がありません。"
+        )
+
+    return paths
+
+
+def _validate_patch_text(
+    *,
+    patch_text: str,
+    project_root: Path,
+    allowed_paths: set[str],
+) -> list[str]:
+    normalized_patch = patch_text.replace(
+        "\r\n",
+        "\n",
+    )
+
+    if not normalized_patch.endswith("\n"):
+        normalized_patch += "\n"
+
+    forbidden_markers = {
+        "GIT binary patch",
+        "Binary files ",
+        "new file mode ",
+        "deleted file mode ",
+        "rename from ",
+        "rename to ",
+        "similarity index ",
+    }
+
+    for marker in forbidden_markers:
+        if marker in normalized_patch:
+            raise MissionImplementationError(
+                "v0.3では新規作成・削除・名前変更・"
+                f"Binary Patchを許可していません: {marker}"
+            )
+
+    patch_paths = _extract_patch_paths(
+        normalized_patch
+    )
+
+    for relative_path in patch_paths:
+        target = (
+            project_root
+            / relative_path
+        ).resolve()
+
+        if not _is_inside_project(
+            project_root,
+            target,
+        ):
+            raise MissionImplementationError(
+                "PatchにProject外Pathがあります。"
+            )
+
+        if any(
+            part in EXCLUDED_NAMES
+            for part in Path(relative_path).parts
+        ):
+            raise MissionImplementationError(
+                "Patchに除外対象Pathがあります: "
+                f"{relative_path}"
+            )
+
+        if relative_path not in allowed_paths:
+            raise MissionImplementationError(
+                "Planner・Backup対象外のファイルは"
+                f"変更できません: {relative_path}"
+            )
+
+        if not target.exists() or not target.is_file():
+            raise MissionImplementationError(
+                "Patch対象ファイルが存在しません: "
+                f"{relative_path}"
+            )
+
+    return patch_paths
+
+
+def _run_git_apply_check(
+    *,
+    project_root: Path,
+    patch_path: Path,
+) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "apply",
+                "--check",
+                "--whitespace=error-all",
+                str(patch_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError as error:
+        raise MissionImplementationError(
+            "Gitコマンドが見つかりません。"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise MissionImplementationError(
+            "git apply --checkが"
+            "タイムアウトしました。"
+        ) from error
+
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+
+    if completed.returncode != 0:
+        detail = (
+            stderr
+            or stdout
+            or "詳細なし"
+        )
+
+        raise MissionImplementationError(
+            "Patch適用可能性検証に失敗しました: "
+            f"{detail}"
+        )
+
+    return {
+        "command": (
+            "git apply --check "
+            "--whitespace=error-all proposed.patch"
+        ),
+        "returncode": completed.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "applicable": True,
+    }
+
+
+def check_mission_implementation_patch(
+    *,
+    mission_id: int,
+    payload: MissionPatchCheckRequest,
+) -> dict[str, Any]:
+    mission = get_mission(mission_id)
+
+    if mission["status"] not in {
+        "APPROVED",
+        "RUNNING",
+    }:
+        raise MissionImplementationError(
+            "承認済みMissionのみPatch検証可能です。"
+        )
+
+    approval_task = _task_by_type(
+        mission,
+        "APPROVAL",
+    )
+    implementation_task = _task_by_type(
+        mission,
+        "IMPLEMENTATION",
+    )
+
+    if approval_task["status"] != "COMPLETED":
+        raise MissionImplementationError(
+            "APPROVAL Taskが完了していません。"
+        )
+
+    if implementation_task["status"] != "RUNNING":
+        raise MissionImplementationError(
+            "IMPLEMENTATION Taskが"
+            "RUNNINGではありません。"
+        )
+
+    implementation_result = (
+        _load_implementation_result(
+            implementation_task
+        )
+    )
+
+    if implementation_result.get("mode") not in {
+        "BACKUP_READY",
+        "PATCH_CHECKED",
+    }:
+        raise MissionImplementationError(
+            "Backup Engine完了後に"
+            "Patch検証を実行してください。"
+        )
+
+    project = _get_project(
+        mission["project_id"]
+    )
+
+    if project is None:
+        raise MissionImplementationError(
+            "Projectが見つかりません。"
+        )
+
+    project_root = Path(
+        project["path"]
+    ).expanduser().resolve()
+
+    if not project_root.exists():
+        raise MissionImplementationError(
+            "Projectフォルダが存在しません。"
+        )
+
+    current_branch = _run_git(
+        project_root,
+        "branch",
+        "--show-current",
+    )
+
+    expected_branch = (
+        implementation_result
+        .get("git", {})
+        .get("branch_name")
+    )
+
+    if current_branch != expected_branch:
+        raise MissionImplementationError(
+            "Mission専用Branchではありません。"
+        )
+
+    dirty_status = _run_git(
+        project_root,
+        "status",
+        "--porcelain",
+    )
+
+    if dirty_status:
+        raise MissionImplementationError(
+            "Projectに未保存の変更があります。"
+        )
+
+    run_root, manifest = (
+        _load_backup_manifest(
+            implementation_result
+        )
+    )
+
+    if manifest.get("mission_id") != mission_id:
+        raise MissionImplementationError(
+            "BackupのMission IDが一致しません。"
+        )
+
+    manifest_branch = (
+        manifest
+        .get("git", {})
+        .get("branch")
+    )
+
+    if manifest_branch != current_branch:
+        raise MissionImplementationError(
+            "Backup作成時と現在のBranchが"
+            "一致しません。"
+        )
+
+    verified_files = (
+        _verify_project_against_manifest(
+            project_root=project_root,
+            manifest=manifest,
+        )
+    )
+
+    allowed_paths = {
+        item["path"]
+        for item in manifest["files"]
+    }
+
+    patch_text = payload.patch_text.replace(
+        "\r\n",
+        "\n",
+    )
+
+    if not patch_text.endswith("\n"):
+        patch_text += "\n"
+
+    patch_paths = _validate_patch_text(
+        patch_text=patch_text,
+        project_root=project_root,
+        allowed_paths=allowed_paths,
+    )
+
+    patch_path = (
+        run_root
+        / "proposed.patch"
+    ).resolve()
+
+    if not _is_inside_project(
+        run_root,
+        patch_path,
+    ):
+        raise MissionImplementationError(
+            "Patch保存先がBackup領域外です。"
+        )
+
+    patch_path.write_text(
+        patch_text,
+        encoding="utf-8",
+    )
+
+    patch_hash = _sha256_bytes(
+        patch_path.read_bytes()
+    )
+
+    apply_check = _run_git_apply_check(
+        project_root=project_root,
+        patch_path=patch_path,
+    )
+
+    check_result = {
+        "patch_engine_version": (
+            "mission-patch-v0.3"
+        ),
+        "mission_id": mission_id,
+        "checked_at": _now(),
+        "generated_by": (
+            payload.generated_by.strip()
+        ),
+        "note": (
+            payload.note.strip()
+            if payload.note
+            else None
+        ),
+        "patch_path": str(patch_path),
+        "patch_sha256": patch_hash,
+        "patch_size_bytes": (
+            patch_path.stat().st_size
+        ),
+        "changed_file_count": len(
+            patch_paths
+        ),
+        "changed_files": patch_paths,
+        "backup_hash_check": {
+            "verified": True,
+            "file_count": len(
+                verified_files
+            ),
+        },
+        "git_apply_check": apply_check,
+        "write_enabled": False,
+        "applied": False,
+    }
+
+    result_path = (
+        run_root
+        / "patch_check.json"
+    ).resolve()
+
+    result_path.write_text(
+        json.dumps(
+            check_result,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    updated_result = {
+        **implementation_result,
+        "implementation_version": (
+            "mission-implementation-v0.3"
+        ),
+        "mode": "PATCH_CHECKED",
+        "patch": {
+            "path": str(patch_path),
+            "result_path": str(result_path),
+            "sha256": patch_hash,
+            "changed_file_count": len(
+                patch_paths
+            ),
+            "changed_files": patch_paths,
+            "applicable": True,
+            "applied": False,
+        },
+        "write_enabled": False,
+        "files_modified": 0,
+        "next_stage": (
+            "明示承認後にPatchを実適用する"
+        ),
+    }
+
+    result_text = json.dumps(
+        updated_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(result_text) > 95000:
+        raise MissionImplementationError(
+            "Patch検証結果が保存上限を超えました。"
+        )
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE mission_tasks
+            SET
+                result = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND mission_id = ?
+            """,
+            (
+                result_text,
+                _now(),
+                implementation_task["id"],
+                mission_id,
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE missions
+            SET
+                status = 'APPROVED',
+                next_action = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                (
+                    "Patch検証完了。"
+                    "実適用の明示承認を待っています。"
+                ),
+                _now(),
+                mission_id,
+            ),
+        )
+
+        connection.commit()
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="INFO",
+        event_type=(
+            "MISSION_IMPLEMENTATION_PATCH_CHECKED"
+        ),
+        message=(
+            f"変更対象{len(patch_paths)}件の"
+            "Unified Diffを検証し、"
+            "git apply --checkに成功しました。"
+            "実ファイルは変更していません。"
+        ),
+        metadata={
+            "patch_engine_version": (
+                "mission-patch-v0.3"
+            ),
+            "changed_file_count": len(
+                patch_paths
+            ),
+            "changed_files": patch_paths,
+            "patch_sha256": patch_hash,
+            "applicable": True,
+            "applied": False,
+            "files_modified": 0,
+        },
+    )
+
+    return {
+        "mission": get_mission(mission_id),
+        "patch_check": check_result,
+        "implementation": updated_result,
+    }
+
+
+def check_mission_implementation_patch_safe(
+    *,
+    mission_id: int,
+    payload: MissionPatchCheckRequest,
+) -> dict[str, Any]:
+    try:
+        return check_mission_implementation_patch(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except MissionImplementationError:
+        raise
+    except MissionError as error:
+        raise MissionImplementationError(
+            str(error)
+        ) from error
+    except Exception as error:
+        raise MissionImplementationError(
+            "Patch Engineで予期しない"
             f"エラーが発生しました: {error}"
         ) from error
 
