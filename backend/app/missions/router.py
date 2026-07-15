@@ -7,6 +7,7 @@ from app.missions.models import (
     MissionPatchGenerateRequest,
     MissionPatchCheckRequest,
     MissionCreate,
+    MissionRepairRequestCreate,
     MissionResponse,
     MissionStatusUpdate,
     MissionSummaryResponse,
@@ -27,6 +28,10 @@ from app.missions.reporting_runner import (
 from app.missions.self_repair_planner import (
     MissionSelfRepairPlannerError,
     run_self_repair_planner_safe,
+)
+from app.missions.repair_request_builder import (
+    MissionRepairRequestError,
+    create_repair_patch_request_safe,
 )
 from app.missions.commit_runner import (
     MissionCommitError,
@@ -402,6 +407,29 @@ def create_mission_repair_plan_endpoint(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+
+
+@router.post(
+    "/{mission_id}/repair-request",
+)
+def create_mission_repair_request_endpoint(
+    mission_id: int,
+    payload: MissionRepairRequestCreate,
+) -> dict:
+    try:
+        return create_repair_patch_request_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionRepairRequestError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
 
 
 @router.post(

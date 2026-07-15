@@ -135,6 +135,23 @@ class MissionPatchGenerateRequest(BaseModel):
     )
 
 
+
+class MissionRepairRequestCreate(BaseModel):
+    edits: list[MissionPatchEdit] = Field(
+        min_length=1,
+        max_length=100,
+    )
+    generated_by: str = Field(
+        default="repair-runner-v0.1",
+        min_length=1,
+        max_length=200,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+
+
 class MissionCommitRequest(BaseModel):
     confirmation: str = Field(
         min_length=1,
