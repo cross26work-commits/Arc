@@ -16,6 +16,10 @@ from app.missions.planner_runner import (
     MissionPlannerError,
     run_mission_planner,
 )
+from app.missions.implementation_runner import (
+    MissionImplementationError,
+    run_mission_implementation_safe,
+)
 from app.missions.service import (
     MissionError,
     advance_mission,
@@ -245,6 +249,26 @@ def plan_mission_endpoint(
     ) as error:
         raise HTTPException(
             status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/implement",
+)
+def implement_mission_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return run_mission_implementation_safe(
+            mission_id
+        )
+    except (
+        MissionImplementationError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
 
