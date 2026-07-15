@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.missions.models import (
     MissionApprovalDecision,
+    MissionPatchApplyRequest,
     MissionPatchCheckRequest,
     MissionCreate,
     MissionResponse,
@@ -19,6 +20,7 @@ from app.missions.planner_runner import (
 )
 from app.missions.implementation_runner import (
     MissionImplementationError,
+    apply_mission_implementation_patch_safe,
     check_mission_implementation_patch_safe,
     create_mission_implementation_backup_safe,
     run_mission_implementation_safe,
@@ -305,6 +307,28 @@ def check_mission_implementation_patch_endpoint(
 ) -> dict:
     try:
         return check_mission_implementation_patch_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionImplementationError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/implementation/patch-apply",
+)
+def apply_mission_implementation_patch_endpoint(
+    mission_id: int,
+    payload: MissionPatchApplyRequest,
+) -> dict:
+    try:
+        return apply_mission_implementation_patch_safe(
             mission_id=mission_id,
             payload=payload,
         )

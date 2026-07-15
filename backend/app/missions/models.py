@@ -70,6 +70,26 @@ class MissionPatchCheckRequest(BaseModel):
     )
 
 
+class MissionPatchApplyRequest(BaseModel):
+    confirmation: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+    expected_patch_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+    )
+    decided_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+
+
 class MissionTaskResponse(BaseModel):
     id: int
     mission_id: int
