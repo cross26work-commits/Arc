@@ -45,6 +45,10 @@ from app.missions.repair_verification_runner import (
     MissionRepairVerificationError,
     run_repair_verification_safe,
 )
+from app.missions.retry_controller import (
+    MissionRetryControllerError,
+    prepare_repair_retry_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -500,6 +504,33 @@ def verify_mission_repair_endpoint(
         )
     except (
         MissionRepairVerificationError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+
+@router.post(
+    "/{mission_id}/repair-retry",
+)
+def prepare_mission_repair_retry_endpoint(
+    mission_id: int,
+    max_retries: int | None = Query(
+        default=None,
+        ge=1,
+        le=10,
+    ),
+) -> dict:
+    try:
+        return prepare_repair_retry_safe(
+            mission_id=mission_id,
+            max_retries=max_retries,
+        )
+    except (
+        MissionRetryControllerError,
         MissionError,
     ) as error:
         raise HTTPException(
