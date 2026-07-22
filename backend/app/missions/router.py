@@ -69,6 +69,10 @@ from app.missions.repair_cycle_runner import (
     MissionRepairCycleRunnerError,
     run_repair_cycle_safe,
 )
+from app.missions.repair_execution_policy import (
+    MissionRepairExecutionPolicyError,
+    evaluate_repair_execution_policy_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -551,6 +555,29 @@ def prepare_mission_repair_retry_endpoint(
         )
     except (
         MissionRetryControllerError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+
+@router.post(
+    "/{mission_id}/repair-policy-evaluate",
+)
+def evaluate_mission_repair_policy_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return (
+            evaluate_repair_execution_policy_safe(
+                mission_id
+            )
+        )
+    except (
+        MissionRepairExecutionPolicyError,
         MissionError,
     ) as error:
         raise HTTPException(
