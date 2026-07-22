@@ -53,6 +53,10 @@ from app.missions.repair_context_builder import (
     MissionRepairContextError,
     build_repair_context_safe,
 )
+from app.missions.repair_edit_generator import (
+    MissionRepairEditGeneratorError,
+    generate_repair_edit_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -535,6 +539,27 @@ def prepare_mission_repair_retry_endpoint(
         )
     except (
         MissionRetryControllerError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+
+@router.post(
+    "/{mission_id}/repair-edit-generate",
+)
+def generate_mission_repair_edit_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return generate_repair_edit_safe(
+            mission_id
+        )
+    except (
+        MissionRepairEditGeneratorError,
         MissionError,
     ) as error:
         raise HTTPException(
