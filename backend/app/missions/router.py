@@ -65,6 +65,10 @@ from app.missions.repair_cycle_orchestrator import (
     MissionRepairCycleOrchestratorError,
     run_repair_cycle_step_safe,
 )
+from app.missions.repair_cycle_runner import (
+    MissionRepairCycleRunnerError,
+    run_repair_cycle_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -547,6 +551,34 @@ def prepare_mission_repair_retry_endpoint(
         )
     except (
         MissionRetryControllerError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+
+@router.post(
+    "/{mission_id}/repair-cycle-run",
+)
+def run_mission_repair_cycle_endpoint(
+    mission_id: int,
+    max_steps: int = Query(
+        default=8,
+        ge=1,
+        le=20,
+    ),
+) -> dict:
+    try:
+        return run_repair_cycle_safe(
+            mission_id=mission_id,
+            max_steps=max_steps,
+        )
+    except (
+        MissionRepairCycleRunnerError,
+        MissionRepairCycleOrchestratorError,
         MissionError,
     ) as error:
         raise HTTPException(
