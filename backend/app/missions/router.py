@@ -27,6 +27,10 @@ from app.missions.reporting_runner import (
     MissionReportingError,
     run_mission_reporting_safe,
 )
+from app.missions.mission_orchestrator import (
+    MissionOrchestratorError,
+    orchestrate_mission_step_safe,
+)
 from app.missions.self_repair_planner import (
     MissionSelfRepairPlannerError,
     run_self_repair_planner_safe,
@@ -712,6 +716,27 @@ def evaluate_mission_repair_policy_endpoint(
             detail=str(error),
         ) from error
 
+
+
+@router.post(
+    "/{mission_id}/orchestrate-step",
+)
+def orchestrate_mission_step_endpoint(
+    mission_id: int,
+    execute: bool = Query(
+        default=False,
+    ),
+) -> dict:
+    try:
+        return orchestrate_mission_step_safe(
+            mission_id=mission_id,
+            execute=execute,
+        )
+    except MissionOrchestratorError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.post(
