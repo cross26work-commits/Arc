@@ -54,6 +54,43 @@ class MissionApprovalDecision(BaseModel):
     )
 
 
+class MissionApprovalResumeRequest(BaseModel):
+    action: Literal[
+        "APPROVE_MISSION",
+        "APPLY_PATCH",
+        "COMMIT_CHANGES",
+    ]
+    reason: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+    decided_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+    expected_patch_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    commit_message: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=500,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+    continue_cycle: bool = True
+    max_steps: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+    )
+
+
 class MissionRepairResumeRequest(BaseModel):
     requested_by: str = Field(
         default="master",

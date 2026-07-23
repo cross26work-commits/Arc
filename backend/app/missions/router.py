@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.missions.models import (
     MissionApprovalDecision,
+    MissionApprovalResumeRequest,
     MissionCommitRequest,
     MissionPatchApplyRequest,
     MissionPatchGenerateRequest,
@@ -34,6 +35,11 @@ from app.missions.mission_orchestrator import (
 from app.missions.mission_cycle_runner import (
     MissionCycleRunnerError,
     run_mission_cycle_safe,
+)
+from app.missions.mission_approval_resume_runner import (
+    MissionApprovalResumeError,
+    approve_and_resume_mission_safe,
+    preview_mission_approval_resume_safe,
 )
 from app.missions.self_repair_planner import (
     MissionSelfRepairPlannerError,
@@ -720,6 +726,44 @@ def evaluate_mission_repair_policy_endpoint(
             detail=str(error),
         ) from error
 
+
+
+@router.post(
+    "/{mission_id}/approval-resume/preview",
+)
+def preview_mission_approval_resume_endpoint(
+    mission_id: int,
+    payload: MissionApprovalResumeRequest,
+) -> dict:
+    try:
+        return preview_mission_approval_resume_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except MissionApprovalResumeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/approval-resume",
+)
+def approve_and_resume_mission_endpoint(
+    mission_id: int,
+    payload: MissionApprovalResumeRequest,
+) -> dict:
+    try:
+        return approve_and_resume_mission_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except MissionApprovalResumeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.post(
