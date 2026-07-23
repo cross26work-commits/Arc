@@ -54,6 +54,34 @@ class MissionApprovalDecision(BaseModel):
     )
 
 
+class MissionRepairResumeRequest(BaseModel):
+    requested_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+
+
+class MissionRepairApproveAndResumeRequest(BaseModel):
+    reason: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+    decided_by: str = Field(
+        default="master",
+        min_length=1,
+        max_length=200,
+    )
+    note: str | None = Field(
+        default=None,
+        max_length=3000,
+    )
+
+
 class MissionPatchCheckRequest(BaseModel):
     patch_text: str = Field(
         min_length=1,
