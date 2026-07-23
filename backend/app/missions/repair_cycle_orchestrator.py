@@ -16,6 +16,9 @@ from app.missions.repair_edit_connector import (
 from app.missions.repair_edit_generator import (
     generate_repair_edit_safe,
 )
+from app.missions.repair_execution_policy import (
+    evaluate_repair_execution_policy_safe,
+)
 from app.missions.repair_patch_apply import (
     apply_repair_patch_safe,
 )
@@ -192,6 +195,40 @@ def _repair_connection(
         _mission_directory(mission_id)
         / "repair-edit-connection.json"
     )
+
+
+def _latest_policy_evaluation(
+    *,
+    mission_id: int,
+    draft: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(draft, dict):
+        return None
+
+    history = _load_json(
+        _mission_directory(mission_id)
+        / "repair-execution-policy-history.json"
+    )
+
+    if not isinstance(history, dict):
+        return None
+
+    evaluation = history.get(
+        "latest_evaluation"
+    )
+
+    if not isinstance(evaluation, dict):
+        return None
+
+    draft_id = draft.get("draft_id")
+
+    if not isinstance(draft_id, str):
+        return None
+
+    if evaluation.get("draft_id") != draft_id:
+        return None
+
+    return evaluation
 
 
 def _status(
@@ -492,19 +529,72 @@ def _determine_stage(
                 ),
             )
 
+        policy_evaluation = (
+            _latest_policy_evaluation(
+                mission_id=mission_id,
+                draft=draft,
+            )
+        )
+
+        if policy_evaluation is None:
+            return (
+                "EVALUATE_POLICY",
+                (
+                    "Repair Edit DraftをExecution Policyで"
+                    "評価します。"
+                ),
+            )
+
+        policy_decision = str(
+            policy_evaluation.get(
+                "decision",
+                "",
+            )
+        ).strip().upper()
+
+        if policy_decision == "APPROVAL_REQUIRED":
+            return (
+                "WAIT_APPROVAL",
+                (
+                    "Repair Execution Policyにより"
+                    "明示承認が必要です。"
+                ),
+            )
+
+        if policy_decision == "BLOCKED":
+            return (
+                "STATE_BLOCKED",
+                (
+                    "Repair Execution Policyにより"
+                    "実行が禁止されました。"
+                ),
+            )
+
+        if policy_decision != "AUTO_APPROVED":
+            return (
+                "STATE_BLOCKED",
+                (
+                    "未対応のExecution Policy判定です。"
+                    f" decision={policy_decision}"
+                ),
+            )
+
         if not _connection_matches_draft(
             connection=connection,
             draft=draft,
         ):
             return (
                 "CONNECT_EDIT",
-                "Edit DraftをPatch Check経路へ接続します。",
+                (
+                    "Policy Auto Approval済みEdit Draftを"
+                    "Patch Check経路へ接続します。"
+                ),
             )
 
         return (
             "CONNECT_EDIT",
             (
-                "接続記録は存在しますが、"
+                "Policy Auto Approval済みですが、"
                 "Repair Request状態が更新されていないため"
                 "安全な重複接続を実行します。"
             ),
@@ -560,6 +650,13 @@ def _execute_stage(
         "GENERATE_EDIT": (
             lambda: generate_repair_edit_safe(
                 mission_id
+            )
+        ),
+        "EVALUATE_POLICY": (
+            lambda: (
+                evaluate_repair_execution_policy_safe(
+                    mission_id
+                )
             )
         ),
         "CONNECT_EDIT": (
@@ -666,6 +763,107 @@ def run_repair_cycle_step(
                 _status(request_before)
             ),
             "next_action": None,
+        }
+
+    if stage == "WAIT_APPROVAL":
+        evaluation = (
+            _latest_policy_evaluation(
+                mission_id=mission_id,
+                draft=draft_before,
+            )
+        )
+
+        step_record = {
+            "step_id": (
+                "repair-cycle-step-"
+                + signature[:16]
+            ),
+            "step_signature": signature,
+            "created_at": _now(),
+            "stage": stage,
+            "executed": False,
+            "duplicate": False,
+            "outcome": "WAITING_APPROVAL",
+            "reason": reason,
+            "request_status_before": (
+                _status(request_before)
+            ),
+            "request_status_after": (
+                _status(request_before)
+            ),
+            "risk_level": (
+                evaluation.get("risk_level")
+                if isinstance(
+                    evaluation,
+                    dict,
+                )
+                else None
+            ),
+            "policy_decision": (
+                evaluation.get("decision")
+                if isinstance(
+                    evaluation,
+                    dict,
+                )
+                else None
+            ),
+            "evaluation_id": (
+                evaluation.get(
+                    "evaluation_id"
+                )
+                if isinstance(
+                    evaluation,
+                    dict,
+                )
+                else None
+            ),
+        }
+
+        state_path = _save_cycle_state(
+            mission_id=mission_id,
+            step_record=step_record,
+        )
+
+        add_mission_log(
+            mission_id=mission_id,
+            level="WARNING",
+            event_type=(
+                "MISSION_REPAIR_CYCLE_WAITING_APPROVAL"
+            ),
+            message=reason,
+            metadata={
+                "orchestrator_version": (
+                    REPAIR_CYCLE_ORCHESTRATOR_VERSION
+                ),
+                "stage": stage,
+                "step_id": step_record[
+                    "step_id"
+                ],
+                "evaluation_id": step_record[
+                    "evaluation_id"
+                ],
+                "risk_level": step_record[
+                    "risk_level"
+                ],
+                "policy_decision": step_record[
+                    "policy_decision"
+                ],
+                "auto_apply": False,
+            },
+        )
+
+        return {
+            "mission": mission,
+            "orchestrator_version": (
+                REPAIR_CYCLE_ORCHESTRATOR_VERSION
+            ),
+            **step_record,
+            "state_path": str(state_path),
+            "next_action": (
+                "MASTER_APPROVAL_REQUIRED"
+            ),
+            "single_stage_only": True,
+            "auto_apply": False,
         }
 
     if stage == "STATE_BLOCKED":

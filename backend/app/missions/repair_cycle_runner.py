@@ -41,6 +41,10 @@ BLOCKED_STAGES = {
     "STATE_BLOCKED",
 }
 
+WAITING_STAGES = {
+    "WAIT_APPROVAL",
+}
+
 TERMINAL_OUTCOMES = {
     "COMPLETED",
 }
@@ -49,9 +53,14 @@ BLOCKED_OUTCOMES = {
     "BLOCKED",
 }
 
+WAITING_OUTCOMES = {
+    "WAITING_APPROVAL",
+}
+
 STOP_REASONS = {
     "CYCLE_COMPLETED",
     "STATE_BLOCKED",
+    "WAIT_APPROVAL",
     "DUPLICATE_STEP",
     "NO_PROGRESS",
     "REPEATED_STATE",
@@ -213,6 +222,12 @@ def _determine_stop_reason(
     if outcome in TERMINAL_OUTCOMES:
         if stage == "CYCLE_COMPLETED":
             return "CYCLE_COMPLETED"
+
+    if stage in WAITING_STAGES:
+        return "WAIT_APPROVAL"
+
+    if outcome in WAITING_OUTCOMES:
+        return "WAIT_APPROVAL"
 
     if stage in BLOCKED_STAGES:
         return "STATE_BLOCKED"
@@ -477,6 +492,11 @@ def run_repair_cycle(
         == "CYCLE_COMPLETED"
     )
 
+    waiting_approval = (
+        stop_reason
+        == "WAIT_APPROVAL"
+    )
+
     bounded = (
         len(steps)
         <= safe_max_steps
@@ -498,6 +518,9 @@ def run_repair_cycle(
         "stop_reason": stop_reason,
         "completed": completed,
         "blocked": blocked,
+        "waiting_approval": (
+            waiting_approval
+        ),
         "bounded": bounded,
         "error_detail": error_detail,
         "steps": steps,
@@ -508,6 +531,7 @@ def run_repair_cycle(
             "auto_apply_override": False,
             "retry_override": False,
             "stop_on_blocked": True,
+            "stop_on_waiting_approval": True,
             "stop_on_duplicate": True,
             "stop_on_repeated_state": True,
         },
@@ -528,7 +552,14 @@ def run_repair_cycle(
         "MISSION_REPAIR_CYCLE_RUN_BLOCKED"
         if blocked
         else (
-            "MISSION_REPAIR_CYCLE_RUN_COMPLETED"
+            (
+                "MISSION_REPAIR_CYCLE_RUN_"
+                "WAITING_APPROVAL"
+            )
+            if waiting_approval
+            else (
+                "MISSION_REPAIR_CYCLE_RUN_COMPLETED"
+            )
         )
     )
 
