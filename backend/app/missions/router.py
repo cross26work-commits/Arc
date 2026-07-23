@@ -104,6 +104,10 @@ from app.missions.repair_approval_resume_runner import (
     approve_and_resume_repair_safe,
     resume_repair_safe,
 )
+from app.missions.mission_recovery import (
+    MissionRecoveryError,
+    inspect_mission_recovery_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -209,6 +213,33 @@ def get_mission_endpoint(
         raise HTTPException(
             status_code=404,
             detail=str(error),
+        ) from error
+
+
+@router.get(
+    "/{mission_id}/recovery",
+)
+def inspect_mission_recovery_endpoint(
+    mission_id: int,
+) -> dict:
+    """Missionの再開可否を読み取り専用で検査する。"""
+    try:
+        return inspect_mission_recovery_safe(
+            mission_id=mission_id
+        )
+    except MissionRecoveryError as error:
+        detail = str(error)
+
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if "Missionが見つかりません"
+            in detail
+            else status.HTTP_409_CONFLICT
+        )
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=detail,
         ) from error
 
 
