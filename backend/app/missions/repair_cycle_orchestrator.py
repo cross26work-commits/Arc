@@ -231,6 +231,41 @@ def _latest_policy_evaluation(
     return evaluation
 
 
+def _latest_repair_approval(
+    *,
+    mission_id: int,
+    draft: dict[str, Any] | None,
+    evaluation: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(draft, dict):
+        return None
+
+    if not isinstance(evaluation, dict):
+        return None
+
+    approval = _load_json(
+        _mission_directory(mission_id)
+        / "repair-approval.json"
+    )
+
+    if not isinstance(approval, dict):
+        return None
+
+    if (
+        approval.get("draft_id")
+        != draft.get("draft_id")
+    ):
+        return None
+
+    if (
+        approval.get("evaluation_id")
+        != evaluation.get("evaluation_id")
+    ):
+        return None
+
+    return approval
+
+
 def _status(
     request: dict[str, Any] | None,
 ) -> str | None:
@@ -553,13 +588,45 @@ def _determine_stage(
         ).strip().upper()
 
         if policy_decision == "APPROVAL_REQUIRED":
-            return (
-                "WAIT_APPROVAL",
-                (
-                    "Repair Execution Policyにより"
-                    "明示承認が必要です。"
-                ),
+            approval = _latest_repair_approval(
+                mission_id=mission_id,
+                draft=draft,
+                evaluation=policy_evaluation,
             )
+
+            if approval is None:
+                return (
+                    "WAIT_APPROVAL",
+                    (
+                        "Repair Execution Policyにより"
+                        "明示承認が必要です。"
+                    ),
+                )
+
+            approval_decision = str(
+                approval.get(
+                    "decision",
+                    "",
+                )
+            ).strip().upper()
+
+            if approval_decision == "REJECTED":
+                return (
+                    "STATE_BLOCKED",
+                    (
+                        "Repair Edit Draftは"
+                        "マスターにより却下されました。"
+                    ),
+                )
+
+            if approval_decision != "APPROVED":
+                return (
+                    "STATE_BLOCKED",
+                    (
+                        "未対応のRepair承認判定です。"
+                        f" decision={approval_decision}"
+                    ),
+                )
 
         if policy_decision == "BLOCKED":
             return (
@@ -570,7 +637,10 @@ def _determine_stage(
                 ),
             )
 
-        if policy_decision != "AUTO_APPROVED":
+        if policy_decision not in {
+            "AUTO_APPROVED",
+            "APPROVAL_REQUIRED",
+        }:
             return (
                 "STATE_BLOCKED",
                 (
@@ -586,7 +656,7 @@ def _determine_stage(
             return (
                 "CONNECT_EDIT",
                 (
-                    "Policy Auto Approval済みEdit Draftを"
+                    "Policy承認済みRepair Edit Draftを"
                     "Patch Check経路へ接続します。"
                 ),
             )
@@ -594,7 +664,7 @@ def _determine_stage(
         return (
             "CONNECT_EDIT",
             (
-                "Policy Auto Approval済みですが、"
+                "Policy承認済みですが、"
                 "Repair Request状態が更新されていないため"
                 "安全な重複接続を実行します。"
             ),

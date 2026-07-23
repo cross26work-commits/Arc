@@ -73,6 +73,12 @@ from app.missions.repair_execution_policy import (
     MissionRepairExecutionPolicyError,
     evaluate_repair_execution_policy_safe,
 )
+from app.missions.repair_approval_workflow import (
+    MissionRepairApprovalError,
+    approve_repair_safe,
+    get_repair_approval_safe,
+    reject_repair_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -562,6 +568,70 @@ def prepare_mission_repair_retry_endpoint(
             detail=str(error),
         ) from error
 
+
+
+@router.get(
+    "/{mission_id}/repair-approval",
+)
+def get_repair_approval_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return get_repair_approval_safe(
+            mission_id
+        )
+    except (
+        MissionRepairApprovalError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/repair-approve",
+)
+def approve_repair_endpoint(
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> dict:
+    try:
+        return approve_repair_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionRepairApprovalError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/repair-reject",
+)
+def reject_repair_endpoint(
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> dict:
+    try:
+        return reject_repair_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionRepairApprovalError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.post(
