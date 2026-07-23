@@ -31,6 +31,10 @@ from app.missions.mission_orchestrator import (
     MissionOrchestratorError,
     orchestrate_mission_step_safe,
 )
+from app.missions.mission_cycle_runner import (
+    MissionCycleRunnerError,
+    run_mission_cycle_safe,
+)
 from app.missions.self_repair_planner import (
     MissionSelfRepairPlannerError,
     run_self_repair_planner_safe,
@@ -716,6 +720,33 @@ def evaluate_mission_repair_policy_endpoint(
             detail=str(error),
         ) from error
 
+
+
+@router.post(
+    "/{mission_id}/run-cycle",
+)
+def run_mission_cycle_endpoint(
+    mission_id: int,
+    execute: bool = Query(
+        default=False,
+    ),
+    max_steps: int = Query(
+        default=10,
+        ge=1,
+        le=50,
+    ),
+) -> dict:
+    try:
+        return run_mission_cycle_safe(
+            mission_id=mission_id,
+            execute=execute,
+            max_steps=max_steps,
+        )
+    except MissionCycleRunnerError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.post(
