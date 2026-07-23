@@ -71,6 +71,10 @@ from app.missions.repair_cycle_runner import (
     MissionRepairCycleRunnerError,
     run_repair_cycle_safe,
 )
+from app.missions.repair_supervisor import (
+    MissionRepairSupervisorError,
+    supervise_repair_safe,
+)
 from app.missions.repair_execution_policy import (
     MissionRepairExecutionPolicyError,
     evaluate_repair_execution_policy_safe,
@@ -708,6 +712,34 @@ def evaluate_mission_repair_policy_endpoint(
             detail=str(error),
         ) from error
 
+
+
+@router.post(
+    "/{mission_id}/repair-supervise",
+)
+def supervise_mission_repair_endpoint(
+    mission_id: int,
+    max_steps: int = Query(
+        default=8,
+        ge=1,
+        le=20,
+    ),
+) -> dict:
+    try:
+        return supervise_repair_safe(
+            mission_id=mission_id,
+            max_steps=max_steps,
+        )
+    except (
+        MissionRepairSupervisorError,
+        MissionRepairCycleRunnerError,
+        MissionRepairCycleOrchestratorError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.post(
