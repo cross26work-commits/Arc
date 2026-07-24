@@ -51,3 +51,15 @@ __all__ = [
     "run_code_generation_patch_integration",
     "run_code_generation_patch_integration_safe",
 ]
+
+from .llm_adapter import (
+    LLM_ADAPTER_VERSION,
+    CodeGenerationLLMAdapter,
+    CodeGenerationLLMAdapterError,
+    DeterministicCodeGenerationLLMAdapter,
+    LLMGenerationRequest,
+    LLMGenerationResponse,
+    calculate_generation_input_sha256,
+    calculate_generation_response_sha256,
+    extract_json_object,
+)
