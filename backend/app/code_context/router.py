@@ -5,6 +5,10 @@ from app.code_context.builder import (
     build_code_context_safe,
     get_code_context_safe,
 )
+from app.code_context.quality_gate import (
+    CodeContextQualityError,
+    evaluate_mission_code_context_safe,
+)
 
 
 router = APIRouter(
@@ -51,6 +55,36 @@ def get_mission_code_context_endpoint(
             mission_id
         )
     except CodeContextError as error:
+        detail = str(error)
+
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if (
+                "見つかりません" in detail
+                or "まだ生成されていません"
+                in detail
+            )
+            else status.HTTP_409_CONFLICT
+        )
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=detail,
+        ) from error
+
+
+@router.get(
+    "/{mission_id}/context/quality",
+)
+def evaluate_mission_code_context_endpoint(
+    mission_id: int,
+) -> dict:
+    """保存済みCode Contextの品質を評価する。"""
+    try:
+        return evaluate_mission_code_context_safe(
+            mission_id
+        )
+    except CodeContextQualityError as error:
         detail = str(error)
 
         status_code = (
