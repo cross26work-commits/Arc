@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from app.missions.models import (
     MissionApprovalDecision,
     MissionApprovalResumeRequest,
+    MissionRecoveryResumeRequest,
     MissionCommitRequest,
     MissionPatchApplyRequest,
     MissionPatchGenerateRequest,
@@ -111,6 +112,10 @@ from app.missions.mission_recovery import (
 from app.missions.mission_recovery_resume_preview import (
     MissionRecoveryResumePreviewError,
     preview_mission_recovery_resume_safe,
+)
+from app.missions.mission_recovery_resume_controller import (
+    MissionRecoveryResumeControllerError,
+    resume_mission_recovery_safe,
 )
 from app.missions.commit_runner import (
     MissionCommitError,
@@ -274,6 +279,28 @@ def preview_mission_recovery_resume_endpoint(
         ) from error
     except (
         MissionRecoveryResumePreviewError
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/recovery-resume",
+)
+def resume_mission_recovery_endpoint(
+    mission_id: int,
+    payload: MissionRecoveryResumeRequest,
+) -> dict:
+    """明示承認されたRecovery操作を安全に再開する。"""
+    try:
+        return resume_mission_recovery_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionRecoveryResumeControllerError
     ) as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

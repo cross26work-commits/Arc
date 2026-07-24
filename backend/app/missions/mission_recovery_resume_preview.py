@@ -25,7 +25,7 @@ ACTION_PREVIEW_MAP: dict[
     "APPROVE_MISSION": {
         "resume_handler": "approve_mission",
         "resume_endpoint": (
-            "/missions/{mission_id}/approve-and-resume"
+            "/missions/{mission_id}/recovery-resume"
         ),
         "http_method": "POST",
         "next_expected_stage": (
@@ -42,7 +42,7 @@ ACTION_PREVIEW_MAP: dict[
             "apply_mission_implementation_patch_safe"
         ),
         "resume_endpoint": (
-            "/missions/{mission_id}/approve-and-resume"
+            "/missions/{mission_id}/recovery-resume"
         ),
         "http_method": "POST",
         "next_expected_stage": (
@@ -77,7 +77,7 @@ ACTION_PREVIEW_MAP: dict[
             "commit_mission_changes_safe"
         ),
         "resume_endpoint": (
-            "/missions/{mission_id}/approve-and-resume"
+            "/missions/{mission_id}/recovery-resume"
         ),
         "http_method": "POST",
         "next_expected_stage": (
