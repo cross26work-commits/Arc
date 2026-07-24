@@ -21,6 +21,12 @@ from app.code_generation.patch_converter import (
     convert_contract_to_patch_request,
     convert_contract_to_patch_request_safe,
 )
+from app.code_generation.patch_integration import (
+    PATCH_INTEGRATION_VERSION,
+    CodeGenerationPatchIntegrationError,
+    run_code_generation_patch_integration,
+    run_code_generation_patch_integration_safe,
+)
 
 __all__ = [
     "CODE_GENERATION_CONTRACT_VERSION",
@@ -40,4 +46,8 @@ __all__ = [
     "validate_contract_against_context",
     "validate_contract_against_context_safe",
     "validate_payload_against_context",
+    "PATCH_INTEGRATION_VERSION",
+    "CodeGenerationPatchIntegrationError",
+    "run_code_generation_patch_integration",
+    "run_code_generation_patch_integration_safe",
 ]
