@@ -108,6 +108,10 @@ from app.missions.mission_recovery import (
     MissionRecoveryError,
     inspect_mission_recovery_safe,
 )
+from app.missions.mission_recovery_resume_preview import (
+    MissionRecoveryResumePreviewError,
+    preview_mission_recovery_resume_safe,
+)
 from app.missions.commit_runner import (
     MissionCommitError,
     commit_mission_changes_safe,
@@ -240,6 +244,40 @@ def inspect_mission_recovery_endpoint(
         raise HTTPException(
             status_code=status_code,
             detail=detail,
+        ) from error
+
+
+@router.get(
+    "/{mission_id}/recovery-resume-preview",
+)
+def preview_mission_recovery_resume_endpoint(
+    mission_id: int,
+) -> dict:
+    """Mission再開処理を実行せずにPreviewする。"""
+    try:
+        return preview_mission_recovery_resume_safe(
+            mission_id=mission_id
+        )
+    except MissionRecoveryError as error:
+        detail = str(error)
+
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if "Missionが見つかりません"
+            in detail
+            else status.HTTP_409_CONFLICT
+        )
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=detail,
+        ) from error
+    except (
+        MissionRecoveryResumePreviewError
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
         ) from error
 
 
