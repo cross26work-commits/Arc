@@ -1184,3 +1184,440 @@ def test_recovery_resume_reaches_commit_approval(
         "MISSION_REPORTING_COMPLETED"
         not in event_types
     )
+
+
+
+def test_recovery_resume_commit_completes_mission(
+    isolated_arc_environment: dict[str, Any],
+) -> None:
+    prepared = _prepare_patch_checked_state(
+        isolated_arc_environment
+    )
+
+    project_root = Path(
+        prepared["project_root"]
+    ).resolve()
+
+    target_path = Path(
+        prepared["target_path"]
+    ).resolve()
+
+    isolated_project = Path(
+        isolated_arc_environment[
+            "isolated_project"
+        ]
+    ).resolve()
+
+    assert project_root == isolated_project
+
+    initial_head = _run_git(
+        project_root,
+        "rev-parse",
+        "HEAD",
+    )
+
+    patch_preview = (
+        preview_mission_recovery_resume_safe(
+            mission_id=1
+        )
+    )
+
+    assert patch_preview["preview_valid"] is True
+
+    assert (
+        patch_preview["current_stage"]
+        == "WAIT_PATCH_APPLY_APPROVAL"
+    )
+
+    assert (
+        patch_preview["required_action"]
+        == "APPLY_PATCH"
+    )
+
+    patch_result = resume_mission_recovery_safe(
+        mission_id=1,
+        payload=MissionRecoveryResumeRequest(
+            approved=True,
+            action="APPLY_PATCH",
+            expected_current_stage=(
+                patch_preview["current_stage"]
+            ),
+            expected_patch_sha256=(
+                patch_preview[
+                    "expected_patch_sha256"
+                ]
+            ),
+            reason=(
+                "Patchを適用し、"
+                "Verificationまで継続する"
+            ),
+            decided_by=(
+                "pytest-isolated-harness"
+            ),
+            note=(
+                "Phase28-5B-5-6A patch approval"
+            ),
+            continue_cycle=True,
+            max_steps=2,
+        ),
+    )
+
+    assert patch_result["approved"] is True
+
+    patch_resume = patch_result[
+        "execution_result"
+    ]["resume"]
+
+    assert (
+        patch_resume["explicit_action"][
+            "result"
+        ]["applied"]
+        is True
+    )
+
+    assert (
+        patch_resume["cycle"][
+            "stop_reason"
+        ]
+        == "MASTER_ACTION_REQUIRED"
+    )
+
+    assert (
+        patch_resume["cycle"][
+            "requires_master_action"
+        ]
+        is True
+    )
+
+    assert (
+        target_path.read_text(
+            encoding="utf-8"
+        )
+        == (
+            "def current_user():\n"
+            "    return {'status': 'after'}\n"
+        )
+    )
+
+    assert (
+        _run_git(
+            project_root,
+            "status",
+            "--porcelain",
+        )
+        != ""
+    )
+
+    commit_preview = (
+        preview_mission_recovery_resume_safe(
+            mission_id=1
+        )
+    )
+
+    assert commit_preview["preview_valid"] is True
+
+    assert (
+        commit_preview["current_stage"]
+        == "WAIT_COMMIT_APPROVAL"
+    )
+
+    assert (
+        commit_preview["required_action"]
+        == "COMMIT_CHANGES"
+    )
+
+    assert (
+        commit_preview["next_expected_stage"]
+        == "RUN_REPORTING"
+    )
+
+    commit_message = (
+        "test: complete recovery resume mission"
+    )
+
+    commit_result = resume_mission_recovery_safe(
+        mission_id=1,
+        payload=MissionRecoveryResumeRequest(
+            approved=True,
+            action="COMMIT_CHANGES",
+            expected_current_stage=(
+                commit_preview["current_stage"]
+            ),
+            commit_message=commit_message,
+            reason=(
+                "Verification成功済み変更を"
+                "CommitしてReportingへ進む"
+            ),
+            decided_by=(
+                "pytest-isolated-harness"
+            ),
+            note=(
+                "Phase28-5B-5-6A commit approval"
+            ),
+            continue_cycle=True,
+            max_steps=2,
+        ),
+    )
+
+    assert commit_result["approved"] is True
+
+    commit_resume = commit_result[
+        "execution_result"
+    ]["resume"]
+
+    assert (
+        commit_resume["action"]
+        == "COMMIT_CHANGES"
+    )
+
+    assert (
+        commit_resume["cycle_started"]
+        is True
+    )
+
+    explicit_action = commit_resume[
+        "explicit_action"
+    ]
+
+    assert explicit_action["executed"] is True
+
+    explicit_commit = explicit_action[
+        "result"
+    ]
+
+    assert explicit_commit["committed"] is True
+
+    commit_hash = explicit_commit[
+        "commit_hash"
+    ]
+
+    assert isinstance(commit_hash, str)
+    assert len(commit_hash) == 40
+
+    assert (
+        explicit_commit["commit_subject"]
+        == commit_message
+    )
+
+    assert commit_hash != initial_head
+
+    assert (
+        _run_git(
+            project_root,
+            "rev-parse",
+            "HEAD",
+        ).strip()
+        == commit_hash
+    )
+
+    assert (
+        _run_git(
+            project_root,
+            "log",
+            "-1",
+            "--pretty=%s",
+        ).strip()
+        == commit_message
+    )
+
+    assert (
+        _run_git(
+            project_root,
+            "status",
+            "--porcelain",
+        ).strip()
+        == ""
+    )
+
+    mission = get_mission(1)
+
+    implementation_task = _task_by_type(
+        mission,
+        "IMPLEMENTATION",
+    )
+
+    verification_task = _task_by_type(
+        mission,
+        "VERIFICATION",
+    )
+
+    reporting_task = _task_by_type(
+        mission,
+        "REPORTING",
+    )
+
+    assert (
+        implementation_task["status"]
+        == "COMPLETED"
+    )
+
+    assert implementation_task["result"]
+
+    implementation_result = json.loads(
+        implementation_task["result"]
+    )
+
+    assert (
+        implementation_result["mode"]
+        == "COMMITTED"
+    )
+
+    assert (
+        implementation_result["commit"][
+            "committed"
+        ]
+        is True
+    )
+
+    assert (
+        implementation_result["commit"][
+            "commit_hash"
+        ]
+        == commit_hash
+    )
+
+    assert (
+        implementation_result["commit"][
+            "working_tree_clean"
+        ]
+        is True
+    )
+
+    assert (
+        implementation_result["commit"][
+            "changed_files"
+        ]
+        == ["backend/app/api/auth.py"]
+    )
+
+    assert (
+        verification_task["status"]
+        == "COMPLETED"
+    )
+
+    assert verification_task["result"]
+
+    verification_result = json.loads(
+        verification_task["result"]
+    )
+
+    assert (
+        verification_result["passed"]
+        is True
+    )
+
+    assert (
+        reporting_task["status"]
+        == "COMPLETED"
+    )
+
+    assert reporting_task["result"]
+
+    reporting_result = json.loads(
+        reporting_task["result"]
+    )
+
+    assert (
+        reporting_result[
+            "reporting_version"
+        ]
+        == "mission-reporting-v0.1"
+    )
+
+    assert (
+        reporting_result["completion"][
+            "success"
+        ]
+        is True
+    )
+
+    assert (
+        reporting_result["completion"][
+            "working_tree_clean"
+        ]
+        is True
+    )
+
+    assert (
+        reporting_result["commit"][
+            "commit_hash"
+        ]
+        == commit_hash
+    )
+
+    assert (
+        reporting_result["commit"][
+            "commit_subject"
+        ]
+        == commit_message
+    )
+
+    assert (
+        reporting_result["verification"][
+            "passed"
+        ]
+        is True
+    )
+
+    assert mission["status"] == "COMPLETED"
+    assert mission["progress"] == 100
+
+    cycle = commit_resume["cycle"]
+
+    assert (
+        cycle["executed_step_count"]
+        == 1
+    )
+
+    assert (
+        cycle["stop_reason"]
+        == "MISSION_COMPLETED"
+    )
+
+    assert cycle["completed"] is True
+
+    assert (
+        cycle["requires_master_action"]
+        is False
+    )
+
+    assert cycle["blocked"] is False
+    assert cycle["error"] is None
+
+    stages = [
+        step.get("stage")
+        for step in cycle["steps"]
+    ]
+
+    assert "RUN_REPORTING" in stages
+
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT event_type
+            FROM mission_logs
+            WHERE mission_id = ?
+            ORDER BY id ASC
+            """,
+            (1,),
+        ).fetchall()
+
+    event_types = [
+        row["event_type"]
+        for row in rows
+    ]
+
+    assert (
+        "MISSION_IMPLEMENTATION_PATCH_APPLIED"
+        in event_types
+    )
+
+    assert (
+        "MISSION_CHANGES_COMMITTED"
+        in event_types
+    )
+
+    assert (
+        "MISSION_REPORTING_COMPLETED"
+        in event_types
+    )
