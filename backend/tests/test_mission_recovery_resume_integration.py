@@ -685,3 +685,257 @@ def test_recovery_resume_applies_patch_only_to_isolated_project(
         "MISSION_APPROVAL_RESUMED"
         in event_types
     )
+
+
+def test_recovery_resume_continues_to_verification(
+    isolated_arc_environment: dict[str, Any],
+) -> None:
+    prepared = _prepare_patch_checked_state(
+        isolated_arc_environment
+    )
+
+    project_root = Path(
+        prepared["project_root"]
+    ).resolve()
+
+    target_path = Path(
+        prepared["target_path"]
+    ).resolve()
+
+    run_root = Path(
+        prepared["run_root"]
+    ).resolve()
+
+    isolated_project = Path(
+        isolated_arc_environment[
+            "isolated_project"
+        ]
+    ).resolve()
+
+    isolated_backup_root = Path(
+        isolated_arc_environment[
+            "isolated_backup_root"
+        ]
+    ).resolve()
+
+    assert project_root == isolated_project
+    assert run_root.is_relative_to(
+        isolated_backup_root
+    )
+
+    preview = (
+        preview_mission_recovery_resume_safe(
+            mission_id=1
+        )
+    )
+
+    assert preview["preview_valid"] is True
+    assert (
+        preview["current_stage"]
+        == "WAIT_PATCH_APPLY_APPROVAL"
+    )
+    assert (
+        preview["required_action"]
+        == "APPLY_PATCH"
+    )
+    assert (
+        preview["next_expected_stage"]
+        == "RUN_VERIFICATION"
+    )
+
+    result = resume_mission_recovery_safe(
+        mission_id=1,
+        payload=MissionRecoveryResumeRequest(
+            approved=True,
+            action="APPLY_PATCH",
+            expected_current_stage=(
+                preview["current_stage"]
+            ),
+            expected_patch_sha256=(
+                preview[
+                    "expected_patch_sha256"
+                ]
+            ),
+            reason=(
+                "Recovery Resumeから"
+                "Verificationへ自動継続"
+            ),
+            decided_by=(
+                "pytest-isolated-harness"
+            ),
+            note=(
+                "Phase28-5B-5-3"
+            ),
+            continue_cycle=True,
+            max_steps=1,
+        ),
+    )
+
+    assert result["approved"] is True
+    assert result["action"] == "APPLY_PATCH"
+
+    execution_result = result[
+        "execution_result"
+    ]
+
+    resume = execution_result["resume"]
+
+    assert resume["action"] == "APPLY_PATCH"
+    assert resume["cycle_started"] is True
+    assert isinstance(
+        resume["cycle"],
+        dict,
+    )
+
+    explicit_action = resume[
+        "explicit_action"
+    ]
+
+    assert explicit_action["executed"] is True
+
+    action_result = explicit_action["result"]
+
+    assert action_result["applied"] is True
+    assert (
+        action_result["changed_file_count"]
+        == 1
+    )
+
+    assert (
+        target_path.read_text(
+            encoding="utf-8"
+        )
+        == (
+            "def current_user():\n"
+            "    return {'status': 'after'}\n"
+        )
+    )
+
+    assert (
+        _run_git(
+            project_root,
+            "diff",
+            "--name-only",
+        ).strip()
+        == "backend/app/api/auth.py"
+    )
+
+    mission = get_mission(1)
+
+    implementation_task = _task_by_type(
+        mission,
+        "IMPLEMENTATION",
+    )
+
+    verification_task = _task_by_type(
+        mission,
+        "VERIFICATION",
+    )
+
+    reporting_task = _task_by_type(
+        mission,
+        "REPORTING",
+    )
+
+    assert (
+        implementation_task["status"]
+        == "COMPLETED"
+    )
+
+    assert (
+        verification_task["status"]
+        == "COMPLETED"
+    )
+
+    assert verification_task["result"]
+
+    verification_result = json.loads(
+        verification_task["result"]
+    )
+
+    assert isinstance(
+        verification_result,
+        dict,
+    )
+
+    assert (
+        verification_result[
+            "passed"
+        ]
+        is True
+    )
+
+    assert (
+        reporting_task["status"]
+        in {
+            "READY",
+            "PENDING",
+        }
+    )
+
+    # max_steps=1のため、
+    # Verification後のReporting実行までは
+    # 必須としない。
+    assert reporting_task["result"] is None
+
+    verification_result_path_value = (
+        verification_result.get(
+            "result_path"
+        )
+        or verification_result.get(
+            "verification_result_path"
+        )
+    )
+
+    if verification_result_path_value:
+        verification_result_path = Path(
+            verification_result_path_value
+        ).resolve()
+
+        assert verification_result_path.exists()
+
+        assert (
+            verification_result_path
+            .is_relative_to(
+                isolated_backup_root
+            )
+        )
+
+    cycle = resume["cycle"]
+
+    assert (
+        cycle.get("executed_step_count", 0)
+        >= 1
+    )
+
+    with database.get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT event_type
+            FROM mission_logs
+            WHERE mission_id = ?
+            ORDER BY id ASC
+            """,
+            (1,),
+        ).fetchall()
+
+    event_types = [
+        row["event_type"]
+        for row in rows
+    ]
+
+    assert (
+        "MISSION_IMPLEMENTATION_PATCH_APPLIED"
+        in event_types
+    )
+
+    verification_events = [
+        event_type
+        for event_type in event_types
+        if (
+            "VERIFICATION"
+            in event_type
+        )
+    ]
+
+    assert verification_events

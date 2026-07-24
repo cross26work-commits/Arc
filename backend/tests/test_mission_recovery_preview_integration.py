@@ -329,13 +329,8 @@ def _prepare_patch_checked_state(
         ],
         "verification_commands": [
             {
-                "name": (
-                    "Python test syntax"
-                ),
-                "command": (
-                    "python3 -m py_compile "
-                    "backend/app/api/auth.py"
-                ),
+                "name": "Git diff check",
+                "command": "git diff --check",
             }
         ],
         "git": {
