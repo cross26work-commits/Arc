@@ -63,3 +63,10 @@ from .llm_adapter import (
     calculate_generation_response_sha256,
     extract_json_object,
 )
+
+from .llm_pipeline import (
+    LLM_PIPELINE_VERSION,
+    CodeGenerationLLMPipelineError,
+    run_code_generation_llm_pipeline,
+    run_code_generation_llm_pipeline_safe,
+)
