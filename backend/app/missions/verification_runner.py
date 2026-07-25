@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -175,6 +177,71 @@ def _classify_failure(
     return "UNKNOWN"
 
 
+def _resolve_python_executable(
+    project_root: Path,
+) -> str:
+    """Projectで利用可能なPythonを安全に解決する。"""
+
+    project_root = project_root.resolve()
+
+    candidates = [
+        project_root / "venv" / "bin" / "python",
+        project_root / "venv" / "bin" / "python3",
+        (
+            project_root
+            / "backend"
+            / "venv"
+            / "bin"
+            / "python"
+        ),
+        (
+            project_root
+            / "backend"
+            / "venv"
+            / "bin"
+            / "python3"
+        ),
+        project_root / ".venv" / "bin" / "python",
+        project_root / ".venv" / "bin" / "python3",
+        (
+            project_root
+            / "backend"
+            / ".venv"
+            / "bin"
+            / "python"
+        ),
+        (
+            project_root
+            / "backend"
+            / ".venv"
+            / "bin"
+            / "python3"
+        ),
+    ]
+
+    for candidate in candidates:
+        if (
+            candidate.is_file()
+            and os.access(candidate, os.X_OK)
+        ):
+            return str(candidate)
+
+    system_python = (
+        shutil.which("python3")
+        or shutil.which("python")
+    )
+
+    if system_python:
+        return str(
+            Path(system_python)
+        )
+
+    raise MissionVerificationError(
+        "Verificationに利用可能なPythonが"
+        "見つかりません。"
+    )
+
+
 def _resolve_command(
     *,
     project_root: Path,
@@ -185,13 +252,33 @@ def _resolve_command(
         command.strip().split()
     )
 
+    python_commands = {
+        (
+            "cd backend && "
+            "venv/bin/python -m compileall -q app"
+        ),
+        (
+            "cd backend && "
+            "venv/bin/python -m pytest"
+        ),
+    }
+
+    python_executable: str | None = None
+
+    if normalized in python_commands:
+        python_executable = (
+            _resolve_python_executable(
+                project_root
+            )
+        )
+
     exact_commands: dict[str, dict[str, Any]] = {
         (
             "cd backend && "
             "venv/bin/python -m compileall -q app"
         ): {
             "argv": [
-                "venv/bin/python",
+                python_executable,
                 "-m",
                 "compileall",
                 "-q",
@@ -206,7 +293,7 @@ def _resolve_command(
             "venv/bin/python -m pytest"
         ): {
             "argv": [
-                "venv/bin/python",
+                python_executable,
                 "-m",
                 "pytest",
             ],
