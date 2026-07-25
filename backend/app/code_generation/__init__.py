@@ -70,3 +70,17 @@ from .llm_pipeline import (
     run_code_generation_llm_pipeline,
     run_code_generation_llm_pipeline_safe,
 )
+
+from .ollama_adapter import (
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    OLLAMA_ADAPTER_VERSION,
+    OllamaAdapterConfig,
+    OllamaCodeGenerationLLMAdapter,
+    OllamaCodeGenerationLLMAdapterError,
+    OllamaConnectionError,
+    OllamaHTTPError,
+    OllamaResponseError,
+    OllamaTimeoutError,
+)
