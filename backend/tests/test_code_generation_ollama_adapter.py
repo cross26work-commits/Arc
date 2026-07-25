@@ -474,3 +474,91 @@ def test_generate_rejects_non_json_response(
             OllamaCodeGenerationLLMAdapter()
             .generate(_request())
         )
+
+
+def test_ollama_adapter_runtime_control_payload():
+    request = LLMGenerationRequest(
+        mission_id=30,
+        system_prompt="system",
+        user_prompt="user",
+        context_sha256="a" * 64,
+    )
+
+    config = OllamaAdapterConfig(
+        model="qwen3:4b",
+        timeout_seconds=360,
+        temperature=0.1,
+        think=False,
+        num_predict=768,
+        num_ctx=8192,
+        keep_alive="15m",
+    )
+
+    adapter = OllamaCodeGenerationLLMAdapter(
+        config=config,
+    )
+
+    payload = adapter._build_request_payload(
+        request
+    )
+
+    assert payload["model"] == "qwen3:4b"
+    assert payload["stream"] is False
+    assert payload["format"] == "json"
+    assert payload["think"] is False
+    assert payload["keep_alive"] == "15m"
+
+    assert payload["options"] == {
+        "temperature": 0.1,
+        "num_predict": 768,
+        "num_ctx": 8192,
+    }
+
+
+def test_ollama_adapter_runtime_control_defaults():
+    config = OllamaAdapterConfig()
+
+    assert config.think is False
+    assert config.num_predict == 1024
+    assert config.num_ctx == 4096
+    assert config.keep_alive == "10m"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("think", "false"),
+        ("num_predict", 0),
+        ("num_predict", 8193),
+        ("num_predict", True),
+        ("num_ctx", 511),
+        ("num_ctx", 262145),
+        ("num_ctx", True),
+        ("keep_alive", ""),
+        ("keep_alive", "   "),
+        ("keep_alive", 10),
+    ],
+)
+def test_ollama_adapter_runtime_control_validation(
+    field_name,
+    field_value,
+):
+    values = {
+        "think": False,
+        "num_predict": 1024,
+        "num_ctx": 4096,
+        "keep_alive": "10m",
+    }
+
+    values[field_name] = field_value
+
+    with pytest.raises(ValueError):
+        OllamaAdapterConfig(**values)
+
+
+def test_ollama_adapter_keep_alive_is_normalized():
+    config = OllamaAdapterConfig(
+        keep_alive=" 20m ",
+    )
+
+    assert config.keep_alive == "20m"

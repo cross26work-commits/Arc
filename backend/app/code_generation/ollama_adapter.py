@@ -25,7 +25,7 @@ from app.code_generation.llm_adapter import (
 
 
 OLLAMA_ADAPTER_VERSION = (
-    "mission-code-generation-ollama-adapter-v0.1"
+    "mission-code-generation-ollama-adapter-v0.2"
 )
 
 DEFAULT_OLLAMA_BASE_URL = (
@@ -35,6 +35,14 @@ DEFAULT_OLLAMA_BASE_URL = (
 DEFAULT_OLLAMA_MODEL = "qwen3:4b"
 
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 300.0
+
+DEFAULT_OLLAMA_THINK = False
+
+DEFAULT_OLLAMA_NUM_PREDICT = 1024
+
+DEFAULT_OLLAMA_NUM_CTX = 4096
+
+DEFAULT_OLLAMA_KEEP_ALIVE = "10m"
 
 MAX_OLLAMA_RESPONSE_BYTES = 10_000_000
 
@@ -77,6 +85,14 @@ class OllamaAdapterConfig:
         DEFAULT_OLLAMA_TIMEOUT_SECONDS
     )
     temperature: float = 0.0
+    think: bool = DEFAULT_OLLAMA_THINK
+    num_predict: int = (
+        DEFAULT_OLLAMA_NUM_PREDICT
+    )
+    num_ctx: int = DEFAULT_OLLAMA_NUM_CTX
+    keep_alive: str = (
+        DEFAULT_OLLAMA_KEEP_ALIVE
+    )
 
     def __post_init__(self) -> None:
         normalized_base_url = (
@@ -118,6 +134,62 @@ class OllamaAdapterConfig:
                 "指定してください。"
             )
 
+        if not isinstance(self.think, bool):
+            raise ValueError(
+                "Thinkはboolで指定してください。"
+            )
+
+        if isinstance(self.num_predict, bool):
+            raise ValueError(
+                "num_predictは整数で"
+                "指定してください。"
+            )
+
+        if not isinstance(self.num_predict, int):
+            raise ValueError(
+                "num_predictは整数で"
+                "指定してください。"
+            )
+
+        if not 1 <= self.num_predict <= 8192:
+            raise ValueError(
+                "num_predictは1以上8192以下で"
+                "指定してください。"
+            )
+
+        if isinstance(self.num_ctx, bool):
+            raise ValueError(
+                "num_ctxは整数で"
+                "指定してください。"
+            )
+
+        if not isinstance(self.num_ctx, int):
+            raise ValueError(
+                "num_ctxは整数で"
+                "指定してください。"
+            )
+
+        if not 512 <= self.num_ctx <= 262144:
+            raise ValueError(
+                "num_ctxは512以上262144以下で"
+                "指定してください。"
+            )
+
+        if not isinstance(self.keep_alive, str):
+            raise ValueError(
+                "keep_aliveは文字列で"
+                "指定してください。"
+            )
+
+        normalized_keep_alive = (
+            self.keep_alive.strip()
+        )
+
+        if not normalized_keep_alive:
+            raise ValueError(
+                "keep_aliveは空にできません。"
+            )
+
         object.__setattr__(
             self,
             "base_url",
@@ -128,6 +200,12 @@ class OllamaAdapterConfig:
             self,
             "model",
             normalized_model,
+        )
+
+        object.__setattr__(
+            self,
+            "keep_alive",
+            normalized_keep_alive,
         )
 
 
@@ -203,6 +281,10 @@ class OllamaCodeGenerationLLMAdapter(
             "model": self._config.model,
             "stream": False,
             "format": "json",
+            "think": self._config.think,
+            "keep_alive": (
+                self._config.keep_alive
+            ),
             "messages": [
                 {
                     "role": "system",
@@ -220,6 +302,12 @@ class OllamaCodeGenerationLLMAdapter(
             "options": {
                 "temperature": (
                     self._config.temperature
+                ),
+                "num_predict": (
+                    self._config.num_predict
+                ),
+                "num_ctx": (
+                    self._config.num_ctx
                 ),
             },
         }
@@ -480,6 +568,14 @@ class OllamaCodeGenerationLLMAdapter(
                 ),
             "temperature":
                 self._config.temperature,
+            "think":
+                self._config.think,
+            "num_predict":
+                self._config.num_predict,
+            "num_ctx":
+                self._config.num_ctx,
+            "keep_alive":
+                self._config.keep_alive,
             "timeout_seconds":
                 self._config.timeout_seconds,
         }
