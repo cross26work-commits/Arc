@@ -403,9 +403,14 @@ def _run_single_command(
             argv,
             cwd=str(cwd),
             check=False,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
+            close_fds=True,
         )
 
         returncode: int | None = completed.returncode
