@@ -426,3 +426,43 @@ def test_alternative_file_keys_are_supported() -> None:
     )
 
     assert result["valid"] is True
+
+
+def test_accepts_code_context_builder_nested_source() -> None:
+    context = context_payload()
+    content = context["files"][0].pop("content")
+
+    context["files"][0]["source"] = {
+        "content": content,
+        "exists": True,
+        "included": True,
+        "truncated": False,
+        "error": None,
+    }
+
+    result = validate_contract_against_context_safe(
+        payload=contract_payload(),
+        context=context,
+    )
+
+    assert result["valid"] is True
+
+
+def test_rejects_nested_source_without_content() -> None:
+    context = context_payload()
+    context["files"][0].pop("content")
+
+    context["files"][0]["source"] = {
+        "exists": True,
+        "included": True,
+        "truncated": False,
+        "error": None,
+    }
+
+    result = validate_contract_against_context_safe(
+        payload=contract_payload(),
+        context=context,
+    )
+
+    assert result["valid"] is False
+    assert "ソース本文" in result["error"]

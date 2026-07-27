@@ -132,6 +132,15 @@ def _extract_source(
         if isinstance(value, str):
             return value
 
+        if (
+            key == "source"
+            and isinstance(value, dict)
+        ):
+            nested_content = value.get("content")
+
+            if isinstance(nested_content, str):
+                return nested_content
+
     raise CodeGenerationContextValidationError(
         "Code Contextにソース本文がありません:"
         f" {path}"
