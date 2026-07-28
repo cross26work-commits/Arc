@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -181,6 +183,11 @@ def _build_verification_commands(
 
     commands: list[dict[str, str]] = []
 
+    if os.name == "nt":
+        python_command = r"venv\Scripts\python.exe"
+    else:
+        python_command = "venv/bin/python"
+
     if {
         "BACKEND",
         "DATA",
@@ -190,7 +197,7 @@ def _build_verification_commands(
                 "name": "Python構文確認",
                 "command": (
                     "cd backend && "
-                    "venv/bin/python -m compileall -q app"
+                    f"{python_command} -m compileall -q app"
                 ),
             }
         )
@@ -209,7 +216,7 @@ def _build_verification_commands(
                 "name": "自動テスト",
                 "command": (
                     "cd backend && "
-                    "venv/bin/python -m pytest"
+                    f"{python_command} -m pytest"
                 ),
             }
         )
