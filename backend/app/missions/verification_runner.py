@@ -252,6 +252,11 @@ def _resolve_command(
         command.strip().split()
     )
 
+    normalized = normalized.replace(
+        r"venv\Scripts\python.exe",
+        "venv/bin/python",
+    )
+
     python_commands = {
         (
             "cd backend && "
