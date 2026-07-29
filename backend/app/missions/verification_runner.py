@@ -185,6 +185,25 @@ def _resolve_python_executable(
     project_root = project_root.resolve()
 
     candidates = [
+        # Windows virtual environments
+        project_root / "venv" / "Scripts" / "python.exe",
+        (
+            project_root
+            / "backend"
+            / "venv"
+            / "Scripts"
+            / "python.exe"
+        ),
+        project_root / ".venv" / "Scripts" / "python.exe",
+        (
+            project_root
+            / "backend"
+            / ".venv"
+            / "Scripts"
+            / "python.exe"
+        ),
+
+        # macOS / Linux virtual environments
         project_root / "venv" / "bin" / "python",
         project_root / "venv" / "bin" / "python3",
         (
@@ -226,15 +245,18 @@ def _resolve_python_executable(
         ):
             return str(candidate)
 
-    system_python = (
-        shutil.which("python3")
-        or shutil.which("python")
-    )
+    for command_name in ("python3", "python"):
+        system_python = shutil.which(command_name)
 
-    if system_python:
-        return str(
-            Path(system_python)
-        )
+        if not system_python:
+            continue
+
+        system_path = Path(system_python).resolve()
+
+        if "WindowsApps" in system_path.parts:
+            continue
+
+        return str(system_path)
 
     raise MissionVerificationError(
         "Verificationに利用可能なPythonが"
