@@ -24,6 +24,7 @@ class LLMGenerationRequest:
     system_prompt: str
     user_prompt: str
     context_sha256: str
+    response_format: str | dict[str, Any] = "json"
 
     def __post_init__(self) -> None:
         if not isinstance(self.mission_id, int):
@@ -77,6 +78,26 @@ class LLMGenerationRequest:
             raise CodeGenerationLLMAdapterError(
                 "Context SHA256は64文字で"
                 "指定してください。"
+            )
+
+        if not isinstance(
+            self.response_format,
+            (
+                str,
+                dict,
+            ),
+        ):
+            raise CodeGenerationLLMAdapterError(
+                "Response Formatは文字列またはJSON Objectで"
+                "指定してください。"
+            )
+
+        if isinstance(
+            self.response_format,
+            str,
+        ) and not self.response_format.strip():
+            raise CodeGenerationLLMAdapterError(
+                "Response Formatが空です。"
             )
 
         try:
@@ -178,6 +199,7 @@ def calculate_generation_input_sha256(
         "context_sha256": (
             request.context_sha256
         ),
+        "response_format": request.response_format,
     }
 
     encoded = json.dumps(

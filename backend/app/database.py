@@ -102,6 +102,7 @@ def initialize_database() -> None:
                 project_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 objective TEXT NOT NULL,
+                mission_type TEXT NOT NULL DEFAULT 'IMPLEMENTATION',
                 status TEXT NOT NULL DEFAULT 'DRAFT',
                 progress INTEGER NOT NULL DEFAULT 0,
                 success_criteria TEXT NOT NULL,
@@ -116,6 +117,22 @@ def initialize_database() -> None:
             )
             """
         )
+
+        mission_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(missions)"
+            ).fetchall()
+        }
+
+        if "mission_type" not in mission_columns:
+            connection.execute(
+                """
+                ALTER TABLE missions
+                ADD COLUMN mission_type TEXT
+                NOT NULL DEFAULT 'IMPLEMENTATION'
+                """
+            )
 
         connection.execute(
             """

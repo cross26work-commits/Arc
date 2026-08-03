@@ -104,12 +104,65 @@ def _require_text(
     return value
 
 
+def _detect_newline(content: str) -> str:
+    """対象ファイルで主に使用されている改行コードを返す。"""
+    if "\r\n" in content:
+        return "\r\n"
+
+    return "\n"
+
+
+def _normalize_edit_newlines(
+    value: str,
+    *,
+    newline: str,
+) -> str:
+    """編集文字列を対象ファイルの改行コードへ合わせる。"""
+    normalized = (
+        value
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+    if newline == "\r\n":
+        return normalized.replace("\n", "\r\n")
+
+    return normalized
+
+
+def _detect_newline(content: str) -> str:
+    """?????????????????????????"""
+    if "\r\n" in content:
+        return "\r\n"
+
+    return "\n"
+
+
+def _normalize_edit_newlines(
+    value: str,
+    *,
+    newline: str,
+) -> str:
+    """????????????????????????"""
+    normalized = (
+        value
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+    if newline == "\r\n":
+        return normalized.replace("\n", "\r\n")
+
+    return normalized
+
+
 def _apply_single_edit(
     *,
     content: str,
     edit: MissionPatchEdit,
 ) -> str:
     operation = edit.operation
+    newline = _detect_newline(content)
 
     if operation == "REPLACE_UNIQUE":
         old_text = _require_text(
@@ -117,27 +170,36 @@ def _apply_single_edit(
             field_name="old_text",
         )
 
-        if edit.new_text is None:
-            raise MissionPatchGeneratorError(
-                "new_textを指定してください。"
-            )
+        new_text = _require_text(
+            edit.new_text,
+            field_name="new_text",
+        )
+
+        old_text = _normalize_edit_newlines(
+            old_text,
+            newline=newline,
+        )
+        new_text = _normalize_edit_newlines(
+            new_text,
+            newline=newline,
+        )
 
         count = content.count(old_text)
 
         if count == 0:
             raise MissionPatchGeneratorError(
-                "置換対象文字列が見つかりません。"
+                "????????????????"
             )
 
         if count != 1:
             raise MissionPatchGeneratorError(
-                "REPLACE_UNIQUEの対象は"
-                f"1件である必要があります: {count}件"
+                "REPLACE_UNIQUE????"
+                f"1???????????: {count}?"
             )
 
         return content.replace(
             old_text,
-            edit.new_text,
+            new_text,
             1,
         )
 
@@ -147,10 +209,17 @@ def _apply_single_edit(
             field_name="text",
         )
 
+        append_text = _normalize_edit_newlines(
+            append_text,
+            newline=newline,
+        )
+
         base = content
 
-        if base and not base.endswith("\n"):
-            base += "\n"
+        if base and not base.endswith(
+            ("\n", "\r")
+        ):
+            base += newline
 
         return base + append_text
 
@@ -168,17 +237,26 @@ def _apply_single_edit(
             field_name="text",
         )
 
+        anchor = _normalize_edit_newlines(
+            anchor,
+            newline=newline,
+        )
+        insertion = _normalize_edit_newlines(
+            insertion,
+            newline=newline,
+        )
+
         count = content.count(anchor)
 
         if count == 0:
             raise MissionPatchGeneratorError(
-                "挿入Anchorが見つかりません。"
+                "??Anchor?????????"
             )
 
         if count != 1:
             raise MissionPatchGeneratorError(
-                "挿入Anchorは1件である必要があります: "
-                f"{count}件"
+                "??Anchor?1???????????: "
+                f"{count}?"
             )
 
         if operation == "INSERT_BEFORE":
@@ -193,7 +271,7 @@ def _apply_single_edit(
         )
 
     raise MissionPatchGeneratorError(
-        f"未対応の編集操作です: {operation}"
+        f"??????????: {operation}"
     )
 
 
@@ -305,6 +383,14 @@ def generate_unified_patch(
         )
 
     patch_text = "".join(patch_parts)
+
+    # Unified Diff??????????????
+    # LF?????????????
+    patch_text = (
+        patch_text
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
 
     if not patch_text.endswith("\n"):
         patch_text += "\n"

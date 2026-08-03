@@ -3,6 +3,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+MissionType = Literal[
+    "IMPLEMENTATION",
+    "ANALYSIS",
+]
+
+
 MissionStatus = Literal[
     "DRAFT",
     "PLANNED",
@@ -28,6 +34,7 @@ TaskStatus = Literal[
 class MissionCreate(BaseModel):
     project_id: int
     objective: str = Field(min_length=3, max_length=3000)
+    mission_type: MissionType = "IMPLEMENTATION"
     success_criteria: str | None = Field(
         default=None,
         max_length=3000,
@@ -307,6 +314,7 @@ class MissionResponse(BaseModel):
     project_name: str
     title: str
     objective: str
+    mission_type: MissionType
     status: MissionStatus
     progress: int
     success_criteria: str
@@ -324,6 +332,7 @@ class MissionSummaryResponse(BaseModel):
     project_name: str
     title: str
     objective: str
+    mission_type: MissionType
     status: MissionStatus
     progress: int
     next_action: str

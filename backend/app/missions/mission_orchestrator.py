@@ -9,8 +9,17 @@ from app.missions.analysis_runner import (
     MissionAnalysisError,
     run_mission_analysis,
 )
+from app.missions.analysis_reporting_runner import (
+    MissionAnalysisReportingError,
+    run_mission_analysis_reporting_safe,
+)
+from app.missions.code_generation_runner import (
+    MissionCodeGenerationError,
+    run_mission_code_generation_safe,
+)
 from app.missions.implementation_runner import (
     MissionImplementationError,
+    create_mission_implementation_backup_safe,
     run_mission_implementation_safe,
 )
 from app.missions.planner_runner import (
@@ -37,13 +46,16 @@ class MissionOrchestratorError(Exception):
 
 
 MISSION_ORCHESTRATOR_VERSION = (
-    "mission-orchestrator-v0.1"
+    "mission-orchestrator-v0.2"
 )
 
 AUTOMATIC_EXECUTION_STAGES = {
     "RUN_ANALYSIS",
     "RUN_PLANNING",
+    "RUN_ANALYSIS_REPORTING",
     "RUN_IMPLEMENTATION_DRY_RUN",
+    "RUN_IMPLEMENTATION_BACKUP",
+    "RUN_CODE_GENERATION",
     "RUN_VERIFICATION",
     "RUN_REPORTING",
 }
@@ -181,6 +193,29 @@ def determine_mission_stage(
         or ""
     ).strip().upper()
 
+    mission_type = str(
+        mission.get("mission_type")
+        or "IMPLEMENTATION"
+    ).strip().upper()
+
+    if mission_type not in {
+        "IMPLEMENTATION",
+        "ANALYSIS",
+    }:
+        return _decision(
+            stage="STATE_BLOCKED",
+            reason=(
+                "????Mission Type??: "
+                f"{mission_type or 'NONE'}"
+            ),
+            recommended_action=(
+                "REPAIR_MISSION_TYPE"
+            ),
+            requires_master_action=True,
+            executable=False,
+            severity="ERROR",
+        )
+
     if mission_status == "COMPLETED":
         return _decision(
             stage="MISSION_COMPLETED",
@@ -251,16 +286,30 @@ def determine_mission_stage(
         mission,
         "REPORTING",
     )
+    analysis_reporting_status = _task_status(
+        mission,
+        "ANALYSIS_REPORTING",
+    )
 
-    required_tasks = {
-        "REQUIREMENTS": requirements_status,
-        "ANALYSIS": analysis_status,
-        "PLANNING": planning_status,
-        "APPROVAL": approval_status,
-        "IMPLEMENTATION": implementation_status,
-        "VERIFICATION": verification_status,
-        "REPORTING": reporting_status,
-    }
+    if mission_type == "ANALYSIS":
+        required_tasks = {
+            "REQUIREMENTS": requirements_status,
+            "ANALYSIS": analysis_status,
+            "PLANNING": planning_status,
+            "ANALYSIS_REPORTING": (
+                analysis_reporting_status
+            ),
+        }
+    else:
+        required_tasks = {
+            "REQUIREMENTS": requirements_status,
+            "ANALYSIS": analysis_status,
+            "PLANNING": planning_status,
+            "APPROVAL": approval_status,
+            "IMPLEMENTATION": implementation_status,
+            "VERIFICATION": verification_status,
+            "REPORTING": reporting_status,
+        }
 
     missing = [
         task_type
@@ -395,6 +444,71 @@ def determine_mission_stage(
             severity="ERROR",
         )
 
+    if mission_type == "ANALYSIS":
+        if analysis_reporting_status in {
+            "READY",
+            "RUNNING",
+        }:
+            return _decision(
+                stage="RUN_ANALYSIS_REPORTING",
+                reason=(
+                    "ANALYSIS_REPORTING Task?????"
+                    "?????????????"
+                    "?????????????"
+                ),
+                recommended_action=(
+                    "RUN_ANALYSIS_REPORTING"
+                ),
+                requires_master_action=False,
+                executable=True,
+                severity="INFO",
+            )
+
+        if analysis_reporting_status == "COMPLETED":
+            return _decision(
+                stage="MISSION_COMPLETED",
+                reason=(
+                    "ANALYSIS Mission?"
+                    "?Task?????????"
+                ),
+                recommended_action=(
+                    "REVIEW_ANALYSIS_REPORT"
+                ),
+                requires_master_action=False,
+                executable=False,
+                severity="INFO",
+            )
+
+        if analysis_reporting_status == "FAILED":
+            return _decision(
+                stage="STATE_BLOCKED",
+                reason=(
+                    "ANALYSIS_REPORTING Task?"
+                    "????????"
+                ),
+                recommended_action=(
+                    "RETRY_OR_INSPECT_ANALYSIS_REPORTING"
+                ),
+                requires_master_action=True,
+                executable=False,
+                severity="ERROR",
+            )
+
+        return _decision(
+            stage="STATE_BLOCKED",
+            reason=(
+                "ANALYSIS_REPORTING Task???"
+                "?????: "
+                f"{analysis_reporting_status}"
+            ),
+            recommended_action=(
+                "INSPECT_ANALYSIS_REPORTING_STATE"
+            ),
+            requires_master_action=True,
+            executable=False,
+            severity="ERROR",
+        )
+
     if approval_status == "READY":
         return _decision(
             stage="WAIT_MISSION_APPROVAL",
@@ -474,10 +588,7 @@ def determine_mission_stage(
         )
 
     if implementation_status == "RUNNING":
-        if implementation_mode in {
-            "",
-            "DRY_RUN",
-        }:
+        if implementation_mode == "":
             return _decision(
                 stage=(
                     "RUN_IMPLEMENTATION_DRY_RUN"
@@ -490,14 +601,40 @@ def determine_mission_stage(
                     "RUN_IMPLEMENTATION_DRY_RUN"
                 ),
                 requires_master_action=False,
+                executable=True,                severity="INFO",
+            )
+
+        if implementation_mode == "DRY_RUN":
+            return _decision(
+                stage="RUN_IMPLEMENTATION_BACKUP",
+                reason=(
+                    "Implementation Dry Run is complete. "
+                    "The Backup Engine can now run."
+                ),
+                recommended_action=(
+                    "RUN_IMPLEMENTATION_BACKUP"
+                ),
+                requires_master_action=False,
                 executable=True,
                 severity="INFO",
             )
 
-        if implementation_mode in {
-            "BACKUP_READY",
-            "PATCH_READY",
-        }:
+        if implementation_mode == "BACKUP_READY":
+            return _decision(
+                stage="RUN_CODE_GENERATION",
+                reason=(
+                    "Implementation Backup is complete. "
+                    "Code Generation can now run."
+                ),
+                recommended_action=(
+                    "RUN_CODE_GENERATION"
+                ),
+                requires_master_action=False,
+                executable=True,
+                severity="INFO",
+            )
+
+        if implementation_mode == "PATCH_READY":
             return _decision(
                 stage=(
                     "WAIT_PATCH_CHECK"
@@ -819,6 +956,20 @@ def _execute_stage(
                 )
             )
         ),
+        "RUN_IMPLEMENTATION_BACKUP": (
+            lambda: (
+                create_mission_implementation_backup_safe(
+                    mission_id
+                )
+            )
+        ),
+        "RUN_CODE_GENERATION": (
+            lambda: (
+                run_mission_code_generation_safe(
+                    mission_id
+                )
+            )
+        ),
         "RUN_VERIFICATION": (
             lambda: (
                 run_mission_verification_safe(
@@ -829,6 +980,13 @@ def _execute_stage(
         "RUN_REPORTING": (
             lambda: (
                 run_mission_reporting_safe(
+                    mission_id
+                )
+            )
+        ),
+        "RUN_ANALYSIS_REPORTING": (
+            lambda: (
+                run_mission_analysis_reporting_safe(
                     mission_id
                 )
             )
@@ -884,8 +1042,10 @@ def orchestrate_mission_step(
                 executed = True
             except (
                 MissionAnalysisError,
+                MissionAnalysisReportingError,
                 MissionPlannerError,
                 MissionImplementationError,
+                MissionCodeGenerationError,
                 MissionVerificationError,
                 MissionReportingError,
                 MissionError,

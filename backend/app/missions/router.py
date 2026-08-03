@@ -29,6 +29,10 @@ from app.missions.reporting_runner import (
     MissionReportingError,
     run_mission_reporting_safe,
 )
+from app.missions.analysis_reporting_runner import (
+    MissionAnalysisReportingError,
+    run_mission_analysis_reporting_safe,
+)
 from app.missions.mission_orchestrator import (
     MissionOrchestratorError,
     orchestrate_mission_step_safe,
@@ -1101,10 +1105,18 @@ def report_mission_endpoint(
     mission_id: int,
 ) -> dict:
     try:
+        mission = get_mission(mission_id)
+
+        if mission.get("mission_type") == "ANALYSIS":
+            return run_mission_analysis_reporting_safe(
+                mission_id
+            )
+
         return run_mission_reporting_safe(
             mission_id
         )
     except (
+        MissionAnalysisReportingError,
         MissionReportingError,
         MissionError,
     ) as error:

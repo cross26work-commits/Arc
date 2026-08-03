@@ -11,6 +11,7 @@ from app.analyzer.service import (
     analyze_project_file,
 )
 from app.database import get_connection
+from app.indexer.service import search_project
 from app.dependencies.service import (
     DependencyGraphError,
     analyze_dependency_tree,
@@ -435,17 +436,21 @@ def _build_analysis_summary(
     high_risk = [
         item
         for item in analyzed
-        if item.get("dependency", {})
-        .get("risk", {})
-        .get("level") == "high"
+        if (
+            (item.get("dependency") or {})
+            .get("risk")
+            or {}
+        ).get("level") == "high"
     ]
 
     medium_risk = [
         item
         for item in analyzed
-        if item.get("dependency", {})
-        .get("risk", {})
-        .get("level") == "medium"
+        if (
+            (item.get("dependency") or {})
+            .get("risk")
+            or {}
+        ).get("level") == "medium"
     ]
 
     api_files = [
@@ -551,13 +556,24 @@ def _run_mission_analysis_impl(
     search_results: list[dict[str, Any]] = []
 
     for term in search_terms:
-        search_results.extend(
-            _search_index(
-                project_id=mission["project_id"],
-                query=term,
-                limit=25,
-            )
+        project_search = search_project(
+            project_id=mission["project_id"],
+            query=term,
+            max_results=25,
         )
+
+        for result in project_search["results"]:
+            search_results.append(
+                {
+                    "path": result["path"],
+                    "line_number": result.get("line_number"),
+                    "symbol_name": None,
+                    "symbol_type": None,
+                    "query": term,
+                    "match_type": result.get("match_type"),
+                    "preview": result.get("preview"),
+                }
+            )
 
     candidates = _rank_candidate_files(
         search_results,
@@ -679,6 +695,12 @@ def _recover_analysis_failure(
         ).fetchone()
 
         if task is None:
+            return
+
+        # Only recover a task that actually failed while running.
+        # Precondition errors and duplicate execution attempts must not
+        # roll back READY or COMPLETED tasks.
+        if task["status"] != "RUNNING":
             return
 
         connection.execute(

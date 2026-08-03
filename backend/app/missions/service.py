@@ -125,6 +125,7 @@ def _row_to_mission(
         "project_name": row["project_name"],
         "title": row["title"],
         "objective": row["objective"],
+        "mission_type": row["mission_type"],
         "status": row["status"],
         "progress": row["progress"],
         "success_criteria": row["success_criteria"],
@@ -198,6 +199,7 @@ def create_mission(payload: MissionCreate) -> dict[str, Any]:
     plan = generate_initial_plan(
         objective=payload.objective,
         project_name=project["name"],
+        mission_type=payload.mission_type,
     )
 
     success_criteria = (
@@ -238,6 +240,7 @@ def create_mission(payload: MissionCreate) -> dict[str, Any]:
                 project_id,
                 title,
                 objective,
+                mission_type,
                 status,
                 progress,
                 success_criteria,
@@ -246,12 +249,13 @@ def create_mission(payload: MissionCreate) -> dict[str, Any]:
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, 'DRAFT', 0, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, 'DRAFT', 0, ?, ?, 0, ?, ?)
             """,
             (
                 payload.project_id,
                 plan["title"],
                 payload.objective.strip(),
+                payload.mission_type,
                 success_criteria,
                 plan["next_action"],
                 now,
@@ -309,6 +313,7 @@ def create_mission(payload: MissionCreate) -> dict[str, Any]:
                     {
                         "task_count": len(plan["tasks"]),
                         "project_name": project["name"],
+                        "mission_type": payload.mission_type,
                     },
                     ensure_ascii=False,
                 ),

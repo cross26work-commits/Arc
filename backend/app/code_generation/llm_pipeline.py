@@ -247,6 +247,10 @@ def run_code_generation_llm_pipeline(
         contract_payload = extract_json_object(
             response.raw_text
         )
+        print(
+            "DEBUG_CONTRACT_PAYLOAD:",
+            repr(contract_payload),
+        )
     except CodeGenerationLLMAdapterError as exc:
         raise CodeGenerationLLMPipelineError(
             "LLM応答からContract JSONを"

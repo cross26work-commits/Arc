@@ -1,7 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from typing import Any
+
+
+VALID_MISSION_TYPES = {
+    "IMPLEMENTATION",
+    "ANALYSIS",
+}
 
 
 def _compact_text(value: str) -> str:
@@ -17,20 +23,8 @@ def build_mission_title(objective: str) -> str:
     return compact[:41].rstrip() + "…"
 
 
-def generate_initial_plan(
-    *,
-    objective: str,
-    project_name: str,
-) -> dict[str, Any]:
-    compact_objective = _compact_text(objective)
-
-    success_criteria = (
-        f"{project_name}に対して「{compact_objective}」を実現し、"
-        "必要な構文確認・Build・テストを通過させ、"
-        "変更内容と検証結果を報告できること。"
-    )
-
-    tasks = [
+def _build_implementation_tasks() -> list[dict[str, Any]]:
+    return [
         {
             "position": 1,
             "title": "目的と成功条件を整理",
@@ -102,6 +96,80 @@ def generate_initial_plan(
             "status": "PENDING",
         },
     ]
+
+
+def _build_analysis_tasks() -> list[dict[str, Any]]:
+    return [
+        {
+            "position": 1,
+            "title": "目的と成功条件を整理",
+            "description": (
+                "マスターの指示を分析要件へ変換し、"
+                "完成と判断する条件を明確にする。"
+            ),
+            "task_type": "REQUIREMENTS",
+            "status": "READY",
+        },
+        {
+            "position": 2,
+            "title": "対象コードを調査",
+            "description": (
+                "コード検索・静的解析・依存関係解析を使い、"
+                "現状、課題、影響範囲を特定する。"
+            ),
+            "task_type": "ANALYSIS",
+            "status": "PENDING",
+        },
+        {
+            "position": 3,
+            "title": "分析結果を整理",
+            "description": (
+                "調査結果を構造化し、課題、優先順位、"
+                "推奨対応を整理する。"
+            ),
+            "task_type": "PLANNING",
+            "status": "PENDING",
+        },
+        {
+            "position": 4,
+            "title": "分析結果を報告",
+            "description": (
+                "現状、主要課題、影響範囲、"
+                "推奨対応と残存リスクを報告する。"
+            ),
+            "task_type": "ANALYSIS_REPORTING",
+            "status": "PENDING",
+        },
+    ]
+
+
+def generate_initial_plan(
+    *,
+    objective: str,
+    project_name: str,
+    mission_type: str = "IMPLEMENTATION",
+) -> dict[str, Any]:
+    if mission_type not in VALID_MISSION_TYPES:
+        raise ValueError(
+            f"Unsupported mission_type: {mission_type}"
+        )
+
+    compact_objective = _compact_text(objective)
+
+    if mission_type == "ANALYSIS":
+        success_criteria = (
+            f"{project_name}に対して「{compact_objective}」を分析し、"
+            "現状、課題、影響範囲、推奨対応を整理して"
+            "報告できること。"
+        )
+        tasks = _build_analysis_tasks()
+    else:
+        success_criteria = (
+            f"{project_name}に対して「{compact_objective}」を実現し、"
+            "必要な構文確認・Build・テストを通過させ、"
+            "変更内容と検証結果を報告できること。"
+        )
+        tasks = _build_implementation_tasks()
 
     return {
         "title": build_mission_title(compact_objective),

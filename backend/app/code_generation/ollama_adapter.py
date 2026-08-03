@@ -280,7 +280,7 @@ class OllamaCodeGenerationLLMAdapter(
         return {
             "model": self._config.model,
             "stream": False,
-            "format": "json",
+            "format": request.response_format,
             "think": self._config.think,
             "keep_alive": (
                 self._config.keep_alive
