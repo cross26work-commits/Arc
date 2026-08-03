@@ -46,3 +46,21 @@ data/repair_plans/
 
 # Arc runtime-generated Mission contexts
 data/mission-contexts/
+
+# Arc local backups and investigation artifacts
+backend/.arc_backups/
+backend/backups/
+backend/*.backup*
+backend/*.bak
+backend/*_backup_*
+backend/phase*_review.txt
+backend/phase*_baseline_*.txt
+backend/phase*_candidates.csv
+backend/encoding_test_*.txt
+backend/mission_*_current.json
+backend/patch_orchestrator_*.py
+backend/app/missions/*.backup*
+backend/app/missions/*.bak
+backend/app/missions/*_backup_*
+backend/app/missions/*.phase32_*
+backend/app/missions/*.step*
