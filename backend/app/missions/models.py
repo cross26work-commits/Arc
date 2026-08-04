@@ -31,6 +31,75 @@ TaskStatus = Literal[
 ]
 
 
+class RequirementRisk(BaseModel):
+    category: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+    level: Literal[
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+    ] = "LOW"
+    description: str = Field(
+        min_length=1,
+        max_length=1000,
+    )
+    mitigation: str | None = Field(
+        default=None,
+        max_length=1000,
+    )
+
+
+class RequirementAnalyzerResult(BaseModel):
+    contract_version: str = Field(
+        default="requirement-contract-v0.1",
+        min_length=1,
+        max_length=100,
+    )
+    objective: str = Field(
+        min_length=3,
+        max_length=3000,
+    )
+    requirements: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    success_criteria: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    in_scope: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    out_of_scope: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    constraints: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    ambiguities: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    missing_information: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    risks: list[RequirementRisk] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    implementation_possible: bool
+    analysis_summary: str = Field(
+        min_length=1,
+        max_length=3000,
+    )
+
+
 class MissionCreate(BaseModel):
     project_id: int
     objective: str = Field(min_length=3, max_length=3000)

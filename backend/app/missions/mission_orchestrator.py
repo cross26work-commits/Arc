@@ -5,6 +5,10 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from app.missions.requirement_runner import (
+    MissionRequirementError,
+    run_mission_requirements,
+)
 from app.missions.analysis_runner import (
     MissionAnalysisError,
     run_mission_analysis,
@@ -46,10 +50,11 @@ class MissionOrchestratorError(Exception):
 
 
 MISSION_ORCHESTRATOR_VERSION = (
-    "mission-orchestrator-v0.2"
+    "mission-orchestrator-v0.3"
 )
 
 AUTOMATIC_EXECUTION_STAGES = {
+    "RUN_REQUIREMENTS",
     "RUN_ANALYSIS",
     "RUN_PLANNING",
     "RUN_ANALYSIS_REPORTING",
@@ -205,7 +210,7 @@ def determine_mission_stage(
         return _decision(
             stage="STATE_BLOCKED",
             reason=(
-                "????Mission Type??: "
+                "未対応のMission Typeです: "
                 f"{mission_type or 'NONE'}"
             ),
             recommended_action=(
@@ -333,19 +338,52 @@ def determine_mission_stage(
             severity="ERROR",
         )
 
-    if requirements_status != "COMPLETED":
+    if requirements_status in {
+        "READY",
+        "RUNNING",
+    }:
+        return _decision(
+            stage="RUN_REQUIREMENTS",
+            reason=(
+                "REQUIREMENTS Taskが"
+                "実行可能状態です。"
+            ),
+            recommended_action=(
+                "RUN_REQUIREMENTS"
+            ),
+            requires_master_action=False,
+            executable=True,
+            severity="INFO",
+        )
+
+    if requirements_status == "FAILED":
         return _decision(
             stage="STATE_BLOCKED",
             reason=(
                 "REQUIREMENTS Taskが"
-                "完了していません。"
+                "失敗しています。"
             ),
             recommended_action=(
-                "COMPLETE_REQUIREMENTS"
+                "RETRY_OR_INSPECT_REQUIREMENTS"
             ),
             requires_master_action=True,
             executable=False,
-            severity="WARNING",
+            severity="ERROR",
+        )
+
+    if requirements_status != "COMPLETED":
+        return _decision(
+            stage="STATE_BLOCKED",
+            reason=(
+                "REQUIREMENTS Task状態が"
+                f"未対応です: {requirements_status}"
+            ),
+            recommended_action=(
+                "INSPECT_REQUIREMENTS_STATE"
+            ),
+            requires_master_action=True,
+            executable=False,
+            severity="ERROR",
         )
 
     if analysis_status in {
@@ -452,9 +490,9 @@ def determine_mission_stage(
             return _decision(
                 stage="RUN_ANALYSIS_REPORTING",
                 reason=(
-                    "ANALYSIS_REPORTING Task?????"
-                    "?????????????"
-                    "?????????????"
+                    "ANALYSIS_REPORTING Taskが"
+                    "実行可能状態です。"
+
                 ),
                 recommended_action=(
                     "RUN_ANALYSIS_REPORTING"
@@ -468,8 +506,8 @@ def determine_mission_stage(
             return _decision(
                 stage="MISSION_COMPLETED",
                 reason=(
-                    "ANALYSIS Mission?"
-                    "?Task?????????"
+                    "ANALYSIS Missionの"
+                    "全Taskが完了しました。"
                 ),
                 recommended_action=(
                     "REVIEW_ANALYSIS_REPORT"
@@ -483,8 +521,8 @@ def determine_mission_stage(
             return _decision(
                 stage="STATE_BLOCKED",
                 reason=(
-                    "ANALYSIS_REPORTING Task?"
-                    "????????"
+                    "ANALYSIS_REPORTING Taskが"
+                    "失敗しています。"
                 ),
                 recommended_action=(
                     "RETRY_OR_INSPECT_ANALYSIS_REPORTING"
@@ -497,8 +535,8 @@ def determine_mission_stage(
         return _decision(
             stage="STATE_BLOCKED",
             reason=(
-                "ANALYSIS_REPORTING Task???"
-                "?????: "
+                "ANALYSIS_REPORTING Task状態が"
+                "未対応です: "
                 f"{analysis_reporting_status}"
             ),
             recommended_action=(
@@ -939,6 +977,11 @@ def _execute_stage(
         str,
         Callable[[], dict[str, Any]],
     ] = {
+        "RUN_REQUIREMENTS": (
+            lambda: run_mission_requirements(
+                mission_id
+            )
+        ),
         "RUN_ANALYSIS": (
             lambda: run_mission_analysis(
                 mission_id
@@ -1041,6 +1084,7 @@ def orchestrate_mission_step(
                 )
                 executed = True
             except (
+                MissionRequirementError,
                 MissionAnalysisError,
                 MissionAnalysisReportingError,
                 MissionPlannerError,

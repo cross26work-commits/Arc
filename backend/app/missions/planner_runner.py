@@ -9,6 +9,9 @@ from typing import Any
 
 from app.database import get_connection
 from app.missions.models import MissionTaskUpdate
+from app.missions.requirement_analyzer import (
+    analyze_requirement,
+)
 from app.missions.service import (
     add_mission_log,
     get_mission,
@@ -514,13 +517,38 @@ def _run_mission_planner_impl(
         workstreams,
     )
 
+    requirement = analyze_requirement(
+        objective=mission["objective"],
+        success_criteria=mission["success_criteria"],
+    )
+
+    requirement_payload = requirement.model_dump(
+        mode="json"
+    )
+
     plan = {
-        "plan_version": "mission-planner-v0.1",
+        "plan_version": "mission-planner-v0.2",
         "mission_id": mission_id,
         "project_id": mission["project_id"],
         "project_name": mission["project_name"],
         "objective": mission["objective"],
         "success_criteria": mission["success_criteria"],
+        "requirement_contract_version": (
+            requirement.contract_version
+        ),
+        "requirement_contract": requirement_payload,
+        "implementation_possible": (
+            requirement.implementation_possible
+        ),
+        "ambiguity_count": len(
+            requirement.ambiguities
+        ),
+        "missing_information_count": len(
+            requirement.missing_information
+        ),
+        "requirement_risk_count": len(
+            requirement.risks
+        ),
         "analysis_version": analysis.get(
             "analysis_version"
         ),
@@ -585,6 +613,21 @@ def _run_mission_planner_impl(
             "workstream_count": len(workstreams),
             "risk": risk,
             "effort": effort,
+            "requirement_contract_version": (
+                requirement.contract_version
+            ),
+            "implementation_possible": (
+                requirement.implementation_possible
+            ),
+            "ambiguity_count": len(
+                requirement.ambiguities
+            ),
+            "missing_information_count": len(
+                requirement.missing_information
+            ),
+            "requirement_risk_count": len(
+                requirement.risks
+            ),
         },
     )
 
