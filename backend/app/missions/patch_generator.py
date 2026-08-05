@@ -13,6 +13,7 @@ from app.missions.implementation_runner import (
     _load_implementation_result,
     _sha256_bytes,
     _task_by_type,
+    _verified_completed_step_paths,
     _verify_project_against_manifest,
     check_mission_implementation_patch_safe,
 )
@@ -490,9 +491,18 @@ def generate_mission_patch(
         )
     )
 
+    completed_step_paths = (
+        _verified_completed_step_paths(
+            implementation_result
+        )
+    )
+
     _verify_project_against_manifest(
         project_root=project_root,
         manifest=manifest,
+        allowed_changed_paths=(
+            completed_step_paths
+        ),
     )
 
     allowed_paths = {

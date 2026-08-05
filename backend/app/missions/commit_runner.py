@@ -7,6 +7,10 @@ from typing import Any
 
 from app.database import get_connection
 from app.missions.models import MissionCommitRequest
+from app.missions.implementation_runner import (
+    _verified_completed_step_paths,
+)
+
 from app.missions.service import (
     MissionError,
     add_mission_log,
@@ -412,6 +416,29 @@ def commit_mission_changes(
             "変更済みファイル情報が不正です。"
         )
 
+    completed_step_paths = (
+        _verified_completed_step_paths(
+            implementation
+        )
+    )
+
+    allowed_commit_paths = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in modified_files
+        if str(value).strip()
+    }
+
+    allowed_commit_paths.update(
+        completed_step_paths
+    )
+
+    if not allowed_commit_paths:
+        raise MissionCommitError(
+            "Commit許可対象ファイルがありません。"
+        )
+
     message = payload.message.strip()
 
     if "\n" in message:
@@ -423,10 +450,9 @@ def commit_mission_changes(
     commit_result = commit_verified_changes(
         project_root=project_root,
         branch_name=branch_name,
-        allowed_paths=[
-            str(path)
-            for path in modified_files
-        ],
+        allowed_paths=sorted(
+            allowed_commit_paths
+        ),
         message=message,
     )
 

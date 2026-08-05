@@ -10,7 +10,14 @@ from typing import Any
 from uuid import uuid4
 
 from app.database import get_connection
+from app.missions.implementation_step_state import (
+    ImplementationStepStateError,
+    initialize_step_execution,
+    load_step_execution,
+    update_current_step_status,
+)
 from app.missions.models import (
+    ImplementationPlan,
     MissionPatchApplyRequest,
     MissionPatchCheckRequest,
     MissionTaskUpdate,
@@ -148,6 +155,135 @@ def _load_plan(
         )
 
     return plan
+
+
+def _initialize_plan_step_execution(
+    plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    typed_plan_payload = plan.get(
+        "typed_plan"
+    )
+
+    if not isinstance(
+        typed_plan_payload,
+        dict,
+    ):
+        return None
+
+    try:
+        typed_plan = ImplementationPlan.model_validate(
+            typed_plan_payload
+        )
+        execution = initialize_step_execution(
+            typed_plan
+        )
+    except Exception as error:
+        raise MissionImplementationError(
+            "Typed Implementation Planから"
+            "Step Execution Stateを初期化できません。"
+        ) from error
+
+    return execution.model_dump(
+        mode="json"
+    )
+
+
+def _mark_step_patch_applied(
+    *,
+    implementation_result: dict[str, Any],
+    patch_sha256: str,
+    changed_files: list[str],
+    applied_at: str,
+    apply_result_path: str | None = None,
+) -> dict[str, Any]:
+    step_execution_payload = (
+        implementation_result.get(
+            "step_execution"
+        )
+    )
+
+    if step_execution_payload is None:
+        return implementation_result
+
+    if not isinstance(
+        step_execution_payload,
+        dict,
+    ):
+        raise MissionImplementationError(
+            "Step Execution Stateの形式が不正です。"
+        )
+
+    try:
+        execution = load_step_execution(
+            step_execution_payload
+        )
+    except ImplementationStepStateError as error:
+        raise MissionImplementationError(
+            str(error)
+        ) from error
+
+    step_id = execution.current_step_id
+
+    if step_id is None:
+        raise MissionImplementationError(
+            "Patch適用対象のCurrent Stepがありません。"
+        )
+
+    step_result = execution.results.get(
+        step_id
+    )
+
+    if step_result is None:
+        raise MissionImplementationError(
+            f"Step Resultがありません: {step_id}"
+        )
+
+    if step_result.status != "PATCH_READY":
+        raise MissionImplementationError(
+            "Patch適用前のStep状態が"
+            "PATCH_READYではありません: "
+            f"{step_result.status}"
+        )
+
+    try:
+        execution = update_current_step_status(
+            execution,
+            status="PATCH_APPLIED",
+            metadata={
+                "patch_applied_at": applied_at,
+                "apply_result_path": (
+                    apply_result_path
+                ),
+                "changed_file_count": len(
+                    changed_files
+                ),
+            },
+        )
+    except ImplementationStepStateError as error:
+        raise MissionImplementationError(
+            str(error)
+        ) from error
+
+    step_result = execution.results[
+        step_id
+    ]
+
+    step_result.patch_sha256 = (
+        patch_sha256
+    )
+    step_result.changed_files = [
+        str(path)
+        for path in changed_files
+    ]
+
+    return {
+        **implementation_result,
+        "step_execution": (
+            execution.model_dump(
+                mode="json"
+            )
+        ),
+    }
 
 
 def _is_inside_project(
@@ -477,6 +613,12 @@ def run_mission_implementation(
         )
     )
 
+    step_execution = (
+        _initialize_plan_step_execution(
+            plan
+        )
+    )
+
     dry_run = {
         "implementation_version": (
             "mission-implementation-v0.1"
@@ -496,6 +638,7 @@ def run_mission_implementation(
         "verification_commands": (
             verification_commands
         ),
+        "step_execution": step_execution,
         "git": git_result,
         "write_enabled": False,
         "files_modified": 0,
@@ -579,6 +722,32 @@ def run_mission_implementation(
             ),
             "selected_file_count": len(
                 validated_files
+            ),
+            "step_execution_enabled": (
+                step_execution is not None
+            ),
+            "step_count": (
+                len(
+                    step_execution.get(
+                        "remaining_step_ids",
+                        [],
+                    )
+                )
+                if isinstance(
+                    step_execution,
+                    dict,
+                )
+                else 0
+            ),
+            "current_step_id": (
+                step_execution.get(
+                    "current_step_id"
+                )
+                if isinstance(
+                    step_execution,
+                    dict,
+                )
+                else None
             ),
             "files_modified": 0,
         },
@@ -1130,12 +1299,84 @@ def _load_backup_manifest(
     return run_root, manifest
 
 
+def _verified_completed_step_paths(
+    implementation_result: dict[str, Any],
+) -> set[str]:
+    step_execution = implementation_result.get(
+        "step_execution"
+    )
+
+    if not isinstance(step_execution, dict):
+        return set()
+
+    completed_step_ids = step_execution.get(
+        "completed_step_ids"
+    )
+    results = step_execution.get("results")
+
+    if (
+        not isinstance(completed_step_ids, list)
+        or not isinstance(results, dict)
+    ):
+        return set()
+
+    allowed: set[str] = set()
+
+    for step_id in completed_step_ids:
+        if not isinstance(step_id, str):
+            continue
+
+        result = results.get(step_id)
+
+        if not isinstance(result, dict):
+            continue
+
+        if result.get("status") != "COMPLETED":
+            continue
+
+        if result.get("verification_passed") is not True:
+            continue
+
+        changed_files = result.get(
+            "changed_files"
+        )
+
+        if not isinstance(changed_files, list):
+            continue
+
+        for value in changed_files:
+            if not isinstance(value, str):
+                continue
+
+            normalized = (
+                value.strip()
+                .replace("\\", "/")
+                .lstrip("/")
+            )
+
+            if normalized:
+                allowed.add(normalized)
+
+    return allowed
+
+
 def _verify_project_against_manifest(
     *,
     project_root: Path,
     manifest: dict[str, Any],
+    allowed_changed_paths: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     files = manifest.get("files")
+    allowed_paths = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in (
+            allowed_changed_paths
+            or set()
+        )
+        if str(value).strip()
+    }
 
     if not isinstance(files, list) or not files:
         raise MissionImplementationError(
@@ -1186,7 +1427,20 @@ def _verify_project_against_manifest(
             target.read_bytes()
         )
 
-        if current_hash != expected_hash:
+        normalized_path = (
+            relative_path.strip()
+            .replace("\\", "/")
+            .lstrip("/")
+        )
+
+        changed_by_completed_step = (
+            normalized_path in allowed_paths
+        )
+
+        if (
+            current_hash != expected_hash
+            and not changed_by_completed_step
+        ):
             raise MissionImplementationError(
                 "Backup作成後に対象ファイルが"
                 f"変更されています: {relative_path}"
@@ -1196,7 +1450,13 @@ def _verify_project_against_manifest(
             {
                 "path": relative_path,
                 "sha256": current_hash,
-                "matched": True,
+                "matched": (
+                    current_hash
+                    == expected_hash
+                ),
+                "completed_step_change": (
+                    changed_by_completed_step
+                ),
             }
         )
 
@@ -1479,15 +1739,31 @@ def check_mission_implementation_patch(
             "Mission専用Branchではありません。"
         )
 
-    dirty_status = _run_git(
-        project_root,
-        "status",
-        "--porcelain",
+    completed_step_paths = (
+        _verified_completed_step_paths(
+            implementation_result
+        )
     )
 
-    if dirty_status:
+    existing_changed_paths = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in _git_changed_paths(
+            project_root
+        )
+        if str(value).strip()
+    }
+
+    unexpected_existing_changes = (
+        existing_changed_paths
+        - completed_step_paths
+    )
+
+    if unexpected_existing_changes:
         raise MissionImplementationError(
-            "Projectに未保存の変更があります。"
+            "Projectに未承認の変更があります: "
+            f"{sorted(unexpected_existing_changes)}"
         )
 
     run_root, manifest = (
@@ -1517,6 +1793,9 @@ def check_mission_implementation_patch(
         _verify_project_against_manifest(
             project_root=project_root,
             manifest=manifest,
+            allowed_changed_paths=(
+                completed_step_paths
+            ),
         )
     )
 
@@ -1555,6 +1834,7 @@ def check_mission_implementation_patch(
     patch_path.write_text(
         patch_text,
         encoding="utf-8",
+        newline="\n",
     )
 
     patch_hash = _sha256_bytes(
@@ -1834,8 +2114,33 @@ def _restore_manifest_files(
     project_root: Path,
     run_root: Path,
     manifest: dict[str, Any],
+    restore_paths: set[str] | None = None,
+    allowed_remaining_paths: set[str] | None = None,
 ) -> dict[str, Any]:
     restored: list[str] = []
+
+    normalized_restore_paths = (
+        {
+            str(value).strip()
+            .replace("\\", "/")
+            .lstrip("/")
+            for value in restore_paths
+            if str(value).strip()
+        }
+        if restore_paths is not None
+        else None
+    )
+
+    normalized_allowed_remaining = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in (
+            allowed_remaining_paths
+            or set()
+        )
+        if str(value).strip()
+    }
 
     files = manifest.get("files")
 
@@ -1858,6 +2163,19 @@ def _restore_manifest_files(
             raise MissionImplementationError(
                 "Backup Pathが不正です。"
             )
+
+        normalized_relative_path = (
+            relative_path.strip()
+            .replace("\\", "/")
+            .lstrip("/")
+        )
+
+        if (
+            normalized_restore_paths is not None
+            and normalized_relative_path
+            not in normalized_restore_paths
+        ):
+            continue
 
         source = (
             run_root
@@ -1911,17 +2229,37 @@ def _restore_manifest_files(
 
         restored.append(relative_path)
 
-    remaining_changes = _git_changed_paths(
-        project_root
+    remaining_changes = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in _git_changed_paths(
+            project_root
+        )
+        if str(value).strip()
+    }
+
+    unexpected_remaining_changes = (
+        remaining_changes
+        - normalized_allowed_remaining
     )
 
     return {
         "restored": True,
         "restored_file_count": len(restored),
         "restored_files": restored,
-        "remaining_changes": remaining_changes,
+        "remaining_changes": sorted(
+            remaining_changes
+        ),
+        "allowed_remaining_changes": sorted(
+            remaining_changes
+            & normalized_allowed_remaining
+        ),
+        "unexpected_remaining_changes": sorted(
+            unexpected_remaining_changes
+        ),
         "working_tree_clean": (
-            len(remaining_changes) == 0
+            len(unexpected_remaining_changes) == 0
         ),
     }
 
@@ -1934,6 +2272,7 @@ def _apply_patch_transactional(
     patch_path: Path,
     expected_patch_sha256: str,
     expected_changed_paths: list[str],
+    allowed_existing_paths: set[str] | None = None,
     simulate_failure_after_apply: bool = False,
 ) -> dict[str, Any]:
     if not project_root.exists():
@@ -1951,19 +2290,45 @@ def _apply_patch_transactional(
             "適用対象Patchが存在しません。"
         )
 
-    initial_changes = _git_changed_paths(
-        project_root
+    normalized_allowed_existing = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in (
+            allowed_existing_paths
+            or set()
+        )
+        if str(value).strip()
+    }
+
+    initial_changes = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in _git_changed_paths(
+            project_root
+        )
+        if str(value).strip()
+    }
+
+    unexpected_initial_changes = (
+        initial_changes
+        - normalized_allowed_existing
     )
 
-    if initial_changes:
+    if unexpected_initial_changes:
         raise MissionImplementationError(
-            "Patch適用前のGit作業ツリーが"
-            f"Cleanではありません: {initial_changes}"
+            "Patch適用前のGit作業ツリーに"
+            "未承認の変更があります: "
+            f"{sorted(unexpected_initial_changes)}"
         )
 
     _verify_project_against_manifest(
         project_root=project_root,
         manifest=manifest,
+        allowed_changed_paths=(
+            normalized_allowed_existing
+        ),
     )
 
     actual_patch_sha256 = _sha256_bytes(
@@ -2039,10 +2404,19 @@ def _apply_patch_transactional(
 
         applied = True
 
-        changed_paths = sorted(
-            _git_changed_paths(
+        all_changed_paths = {
+            str(value).strip()
+            .replace("\\", "/")
+            .lstrip("/")
+            for value in _git_changed_paths(
                 project_root
             )
+            if str(value).strip()
+        }
+
+        changed_paths = sorted(
+            all_changed_paths
+            - normalized_allowed_existing
         )
 
         unexpected_paths = (
@@ -2273,6 +2647,12 @@ def apply_mission_implementation_patch(
         )
     )
 
+    completed_step_paths = (
+        _verified_completed_step_paths(
+            implementation_result
+        )
+    )
+
     patch_path_value = patch_info.get("path")
 
     if not isinstance(patch_path_value, str):
@@ -2316,6 +2696,9 @@ def apply_mission_implementation_patch(
             str(path)
             for path in expected_changed_paths
         ],
+        allowed_existing_paths=(
+            completed_step_paths
+        ),
     )
 
     applied_at = _now()
@@ -2347,6 +2730,27 @@ def apply_mission_implementation_patch(
             indent=2,
         ),
         encoding="utf-8",
+    )
+
+    implementation_result = (
+        _mark_step_patch_applied(
+            implementation_result=(
+                implementation_result
+            ),
+            patch_sha256=apply_result[
+                "patch_sha256"
+            ],
+            changed_files=[
+                str(path)
+                for path in apply_result[
+                    "changed_files"
+                ]
+            ],
+            applied_at=applied_at,
+            apply_result_path=str(
+                apply_result_path
+            ),
+        )
     )
 
     updated_result = {
@@ -2431,6 +2835,44 @@ def apply_mission_implementation_patch(
             ),
             "changed_files": (
                 apply_result["changed_files"]
+            ),
+            "implementation_step_id": (
+                (
+                    updated_result[
+                        "step_execution"
+                    ].get("current_step_id")
+                )
+                if isinstance(
+                    updated_result.get(
+                        "step_execution"
+                    ),
+                    dict,
+                )
+                else None
+            ),
+            "step_execution_status": (
+                (
+                    updated_result[
+                        "step_execution"
+                    ]
+                    .get("results", {})
+                    .get(
+                        updated_result[
+                            "step_execution"
+                        ].get(
+                            "current_step_id"
+                        ),
+                        {},
+                    )
+                    .get("status")
+                )
+                if isinstance(
+                    updated_result.get(
+                        "step_execution"
+                    ),
+                    dict,
+                )
+                else None
             ),
             "write_enabled": True,
             "applied": True,

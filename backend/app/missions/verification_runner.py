@@ -9,9 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from app.database import get_connection
+from app.missions.implementation_step_state import (
+    ImplementationStepStateError,
+    complete_current_step,
+    load_step_execution,
+    update_current_step_status,
+)
 from app.missions.implementation_runner import (
     _load_backup_manifest,
     _restore_manifest_files,
+    _verified_completed_step_paths,
 )
 from app.missions.models import MissionTaskUpdate
 from app.missions.service import (
@@ -264,6 +271,44 @@ def _resolve_python_executable(
     )
 
 
+def _resolve_python_verification_layout(
+    project_root: Path,
+) -> dict[str, Any]:
+    project_root = project_root.resolve()
+    backend_root = (
+        project_root / "backend"
+    ).resolve()
+
+    working_root = (
+        backend_root
+        if backend_root.is_dir()
+        else project_root
+    )
+
+    compile_targets = [
+        candidate
+        for candidate in (
+            "app",
+            "src",
+            "tests",
+        )
+        if (
+            working_root / candidate
+        ).exists()
+    ]
+
+    if not compile_targets:
+        compile_targets = ["."]
+
+    return {
+        "working_root": working_root,
+        "compile_targets": compile_targets,
+        "backend_exists": (
+            backend_root.is_dir()
+        ),
+    }
+
+
 def _resolve_command(
     *,
     project_root: Path,
@@ -291,10 +336,16 @@ def _resolve_command(
     }
 
     python_executable: str | None = None
+    python_layout: dict[str, Any] | None = None
 
     if normalized in python_commands:
         python_executable = (
             _resolve_python_executable(
+                project_root
+            )
+        )
+        python_layout = (
+            _resolve_python_verification_layout(
                 project_root
             )
         )
@@ -309,9 +360,19 @@ def _resolve_command(
                 "-m",
                 "compileall",
                 "-q",
-                "app",
+                *(
+                    python_layout[
+                        "compile_targets"
+                    ]
+                    if python_layout
+                    else ["."]
+                ),
             ],
-            "cwd": project_root / "backend",
+            "cwd": (
+                python_layout["working_root"]
+                if python_layout
+                else project_root
+            ),
             "timeout_seconds": 60,
             "category": "COMPILE",
         },
@@ -324,7 +385,11 @@ def _resolve_command(
                 "-m",
                 "pytest",
             ],
-            "cwd": project_root / "backend",
+            "cwd": (
+                python_layout["working_root"]
+                if python_layout
+                else project_root
+            ),
             "timeout_seconds": 300,
             "category": "TEST",
         },
@@ -405,6 +470,20 @@ def _resolve_command(
             "Project外です。"
         ) from error
 
+    if not cwd.exists():
+        raise MissionVerificationError(
+            "Verification作業ディレクトリが"
+            "存在しません: "
+            f"{cwd}"
+        )
+
+    if not cwd.is_dir():
+        raise MissionVerificationError(
+            "Verification作業ディレクトリが"
+            "フォルダではありません: "
+            f"{cwd}"
+        )
+
     return {
         "name": name.strip() or "Verification",
         "original_command": command,
@@ -446,6 +525,11 @@ def _run_single_command(
 
     except FileNotFoundError as error:
         returncode = 127
+        stdout = ""
+        stderr = str(error)
+
+    except OSError as error:
+        returncode = 126
         stdout = ""
         stderr = str(error)
 
@@ -723,6 +807,474 @@ def _calculate_progress_in_connection(
     )
 
 
+def _load_step_execution_from_implementation(
+    implementation_result: dict[str, Any],
+):
+    payload = implementation_result.get(
+        "step_execution"
+    )
+
+    if payload is None:
+        return None
+
+    if not isinstance(payload, dict):
+        raise MissionVerificationError(
+            "Step Execution Stateの形式が不正です。"
+        )
+
+    try:
+        return load_step_execution(payload)
+    except ImplementationStepStateError as error:
+        raise MissionVerificationError(
+            str(error)
+        ) from error
+
+
+def _store_step_execution(
+    *,
+    implementation_result: dict[str, Any],
+    execution,
+) -> dict[str, Any]:
+    return {
+        **implementation_result,
+        "step_execution": execution.model_dump(
+            mode="json"
+        ),
+    }
+
+
+def _start_step_verification(
+    implementation_result: dict[str, Any],
+) -> dict[str, Any]:
+    execution = (
+        _load_step_execution_from_implementation(
+            implementation_result
+        )
+    )
+
+    if execution is None:
+        return implementation_result
+
+    step_id = execution.current_step_id
+
+    if step_id is None:
+        raise MissionVerificationError(
+            "Verification対象のCurrent Stepがありません。"
+        )
+
+    step_result = execution.results.get(step_id)
+
+    if step_result is None:
+        raise MissionVerificationError(
+            f"Step Resultがありません: {step_id}"
+        )
+
+    if step_result.status != "PATCH_APPLIED":
+        raise MissionVerificationError(
+            "Verification開始前のStep状態が"
+            "PATCH_APPLIEDではありません: "
+            f"{step_result.status}"
+        )
+
+    try:
+        execution = update_current_step_status(
+            execution,
+            status="VERIFYING",
+            metadata={
+                "verification_started_at": _now(),
+            },
+        )
+    except ImplementationStepStateError as error:
+        raise MissionVerificationError(
+            str(error)
+        ) from error
+
+    return _store_step_execution(
+        implementation_result=implementation_result,
+        execution=execution,
+    )
+
+
+def _complete_step_verification(
+    *,
+    implementation_result: dict[str, Any],
+    verification_result: dict[str, Any],
+) -> dict[str, Any]:
+    execution = (
+        _load_step_execution_from_implementation(
+            implementation_result
+        )
+    )
+
+    if execution is None:
+        return implementation_result
+
+    step_id = execution.current_step_id
+
+    if step_id is None:
+        raise MissionVerificationError(
+            "完了対象のCurrent Stepがありません。"
+        )
+
+    step_result = execution.results.get(step_id)
+
+    if step_result is None:
+        raise MissionVerificationError(
+            f"Step Resultがありません: {step_id}"
+        )
+
+    if step_result.status != "VERIFYING":
+        raise MissionVerificationError(
+            "Verification完了前のStep状態が"
+            "VERIFYINGではありません: "
+            f"{step_result.status}"
+        )
+
+    changed_files = list(
+        step_result.changed_files
+    )
+
+    try:
+        execution = complete_current_step(
+            execution,
+            verification_passed=True,
+            changed_files=changed_files,
+            metadata={
+                "verification_completed_at": _now(),
+                "verification_version": (
+                    verification_result.get(
+                        "verification_version"
+                    )
+                ),
+                "executed_command_count": (
+                    verification_result.get(
+                        "executed_command_count"
+                    )
+                ),
+                "verification_passed": True,
+            },
+        )
+    except ImplementationStepStateError as error:
+        raise MissionVerificationError(
+            str(error)
+        ) from error
+
+    return _store_step_execution(
+        implementation_result=implementation_result,
+        execution=execution,
+    )
+
+
+def _fail_step_verification(
+    *,
+    implementation_result: dict[str, Any],
+    verification_result: dict[str, Any],
+) -> dict[str, Any]:
+    execution = (
+        _load_step_execution_from_implementation(
+            implementation_result
+        )
+    )
+
+    if execution is None:
+        return implementation_result
+
+    error_message = str(
+        verification_result.get(
+            "failure_category"
+        )
+        or "Verification failed."
+    )
+
+    try:
+        execution = update_current_step_status(
+            execution,
+            status="FAILED",
+            error=error_message,
+            metadata={
+                "verification_completed_at": _now(),
+                "verification_passed": False,
+                "failure_category": (
+                    verification_result.get(
+                        "failure_category"
+                    )
+                ),
+                "executed_command_count": (
+                    verification_result.get(
+                        "executed_command_count"
+                    )
+                ),
+            },
+        )
+    except ImplementationStepStateError as error:
+        raise MissionVerificationError(
+            str(error)
+        ) from error
+
+    step_id = execution.current_step_id
+
+    if step_id is not None:
+        execution.results[
+            step_id
+        ].verification_passed = False
+
+    return _store_step_execution(
+        implementation_result=implementation_result,
+        execution=execution,
+    )
+
+
+def _step_execution_payload(
+    implementation_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    payload = implementation_result.get(
+        "step_execution"
+    )
+
+    if payload is None:
+        return None
+
+    if not isinstance(payload, dict):
+        raise MissionVerificationError(
+            "Step Execution Stateの形式が不正です。"
+        )
+
+    return payload
+
+
+def _has_remaining_steps(
+    implementation_result: dict[str, Any],
+) -> bool:
+    payload = _step_execution_payload(
+        implementation_result
+    )
+
+    if payload is None:
+        return False
+
+    execution_completed = payload.get(
+        "execution_completed"
+    )
+
+    remaining = payload.get(
+        "remaining_step_ids"
+    )
+
+    return (
+        execution_completed is False
+        and isinstance(remaining, list)
+        and len(remaining) > 0
+    )
+
+
+def _append_step_verification_history(
+    *,
+    implementation_result: dict[str, Any],
+    verification_result: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _step_execution_payload(
+        implementation_result
+    )
+
+    if payload is None:
+        return implementation_result
+
+    completed_steps = payload.get(
+        "completed_step_ids"
+    )
+
+    completed_step_id = (
+        completed_steps[-1]
+        if isinstance(completed_steps, list)
+        and completed_steps
+        else None
+    )
+
+    history = implementation_result.get(
+        "step_verification_history"
+    )
+
+    if not isinstance(history, list):
+        history = []
+
+    history = [
+        *history,
+        {
+            "step_id": completed_step_id,
+            "passed": verification_result.get(
+                "passed"
+            ),
+            "verification_version": (
+                verification_result.get(
+                    "verification_version"
+                )
+            ),
+            "executed_command_count": (
+                verification_result.get(
+                    "executed_command_count"
+                )
+            ),
+            "completed_at": _now(),
+            "result": verification_result,
+        },
+    ]
+
+    return {
+        **implementation_result,
+        "step_verification_history": history,
+    }
+
+
+def _rearm_next_step_cycle(
+    *,
+    mission_id: int,
+    implementation_task: dict[str, Any],
+    verification_task: dict[str, Any],
+    implementation_result: dict[str, Any],
+    verification_result: dict[str, Any],
+) -> dict[str, Any]:
+    if not _has_remaining_steps(
+        implementation_result
+    ):
+        raise MissionVerificationError(
+            "再武装対象の残Stepがありません。"
+        )
+
+    implementation_result = (
+        _append_step_verification_history(
+            implementation_result=(
+                implementation_result
+            ),
+            verification_result=(
+                verification_result
+            ),
+        )
+    )
+
+    step_execution = _step_execution_payload(
+        implementation_result
+    )
+
+    current_step_id = (
+        step_execution.get(
+            "current_step_id"
+        )
+        if step_execution is not None
+        else None
+    )
+
+    rearmed_result = {
+        **implementation_result,
+        "mode": "BACKUP_READY",
+        "step_cycle_rearmed": True,
+        "next_stage": "RUN_CODE_GENERATION",
+        "last_completed_verification": {
+            "passed": verification_result.get(
+                "passed"
+            ),
+            "verification_version": (
+                verification_result.get(
+                    "verification_version"
+                )
+            ),
+            "executed_command_count": (
+                verification_result.get(
+                    "executed_command_count"
+                )
+            ),
+            "completed_at": _now(),
+        },
+    }
+
+    result_text = json.dumps(
+        rearmed_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(result_text) > 95000:
+        raise MissionVerificationError(
+            "次Step再武装後のIMPLEMENTATION結果が"
+            "保存上限を超えました。"
+        )
+
+    update_mission_task(
+        mission_id=mission_id,
+        task_id=implementation_task["id"],
+        payload=MissionTaskUpdate(
+            status="RUNNING",
+            result=result_text,
+            target_path=(
+                implementation_task.get(
+                    "target_path"
+                )
+            ),
+        ),
+    )
+
+    updated_mission = update_mission_task(
+        mission_id=mission_id,
+        task_id=verification_task["id"],
+        payload=MissionTaskUpdate(
+            status="READY",
+            result=None,
+            target_path=(
+                verification_task.get(
+                    "target_path"
+                )
+            ),
+        ),
+    )
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="INFO",
+        event_type=(
+            "IMPLEMENTATION_STEP_CYCLE_REARMED"
+        ),
+        message=(
+            "Step Verificationが成功したため、"
+            "次のImplementation Stepを"
+            "Code Generation可能な状態へ戻しました。"
+        ),
+        metadata={
+            "current_step_id": current_step_id,
+            "completed_step_ids": (
+                step_execution.get(
+                    "completed_step_ids",
+                    [],
+                )
+                if step_execution is not None
+                else []
+            ),
+            "remaining_step_ids": (
+                step_execution.get(
+                    "remaining_step_ids",
+                    [],
+                )
+                if step_execution is not None
+                else []
+            ),
+            "implementation_status":
+                "RUNNING",
+            "implementation_mode":
+                "BACKUP_READY",
+            "verification_status":
+                "READY",
+            "next_stage":
+                "RUN_CODE_GENERATION",
+        },
+    )
+
+    return {
+        "mission": updated_mission,
+        "verification": verification_result,
+        "step_cycle_rearmed": True,
+        "current_step_id": current_step_id,
+        "next_stage": "RUN_CODE_GENERATION",
+    }
+
+
 def _rollback_failed_verification(
     *,
     mission_id: int,
@@ -738,10 +1290,79 @@ def _rollback_failed_verification(
         )
     )
 
+    step_execution = implementation_result.get(
+        "step_execution"
+    )
+
+    if not isinstance(step_execution, dict):
+        raise MissionVerificationError(
+            "Step Execution Stateがありません。"
+        )
+
+    current_step_id = step_execution.get(
+        "current_step_id"
+    )
+    step_results = step_execution.get(
+        "results"
+    )
+
+    if (
+        not isinstance(current_step_id, str)
+        or not isinstance(step_results, dict)
+    ):
+        raise MissionVerificationError(
+            "Current Step情報が不正です。"
+        )
+
+    current_step_result = step_results.get(
+        current_step_id
+    )
+
+    if not isinstance(
+        current_step_result,
+        dict,
+    ):
+        raise MissionVerificationError(
+            "Current Step Resultがありません。"
+        )
+
+    changed_files = current_step_result.get(
+        "changed_files"
+    )
+
+    if not isinstance(changed_files, list):
+        raise MissionVerificationError(
+            "Current Stepの変更ファイル情報が"
+            "不正です。"
+        )
+
+    restore_paths = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in changed_files
+        if str(value).strip()
+    }
+
+    if not restore_paths:
+        raise MissionVerificationError(
+            "Current Stepの復元対象がありません。"
+        )
+
+    completed_step_paths = (
+        _verified_completed_step_paths(
+            implementation_result
+        )
+    )
+
     restore_result = _restore_manifest_files(
         project_root=project_root,
         run_root=run_root,
         manifest=manifest,
+        restore_paths=restore_paths,
+        allowed_remaining_paths=(
+            completed_step_paths
+        ),
     )
 
     if not restore_result["working_tree_clean"]:
@@ -758,10 +1379,16 @@ def _rollback_failed_verification(
         "implementation_version": (
             "mission-implementation-v0.4"
         ),
-        "mode": "ROLLED_BACK",
-        "write_enabled": False,
-        "files_modified": 0,
-        "modified_files": [],
+        "mode": "BACKUP_READY",
+        "write_enabled": bool(
+            completed_step_paths
+        ),
+        "files_modified": len(
+            completed_step_paths
+        ),
+        "modified_files": sorted(
+            completed_step_paths
+        ),
         "rollback": {
             "rolled_back": True,
             "rolled_back_at": rollback_at,
@@ -835,7 +1462,7 @@ def _rollback_failed_verification(
             """
             UPDATE mission_tasks
             SET
-                status = 'READY',
+                status = 'RUNNING',
                 result = ?,
                 updated_at = ?
             WHERE id = ?
@@ -948,8 +1575,10 @@ def _rollback_failed_verification(
                 ]
             ),
             "working_tree_clean": True,
-            "implementation_status": "READY",
+            "implementation_status": "RUNNING",
             "verification_status": "PENDING",
+            "resume_mode": "BACKUP_READY",
+            "next_stage": "RUN_CODE_GENERATION",
         },
     )
 
@@ -1047,6 +1676,38 @@ def run_mission_verification(
             "保存されていません。"
         )
 
+    implementation_result = (
+        _start_step_verification(
+            implementation_result
+        )
+    )
+
+    implementation_result_text = json.dumps(
+        implementation_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(implementation_result_text) > 95000:
+        raise MissionVerificationError(
+            "Verification開始後の"
+            "IMPLEMENTATION結果が保存上限を超えました。"
+        )
+
+    update_mission_task(
+        mission_id=mission_id,
+        task_id=implementation_task["id"],
+        payload=MissionTaskUpdate(
+            status=implementation_task["status"],
+            result=implementation_result_text,
+            target_path=(
+                implementation_task.get(
+                    "target_path"
+                )
+            ),
+        ),
+    )
+
     if verification_task["status"] != "RUNNING":
         update_mission_task(
             mission_id=mission_id,
@@ -1064,6 +1725,17 @@ def run_mission_verification(
     )
 
     if not verification_result["passed"]:
+        implementation_result = (
+            _fail_step_verification(
+                implementation_result=(
+                    implementation_result
+                ),
+                verification_result=(
+                    verification_result
+                ),
+            )
+        )
+
         return _rollback_failed_verification(
             mission_id=mission_id,
             project_root=project_root,
@@ -1072,6 +1744,73 @@ def run_mission_verification(
             implementation_result=implementation_result,
             verification_result=verification_result,
         )
+
+    implementation_result = (
+        _complete_step_verification(
+            implementation_result=(
+                implementation_result
+            ),
+            verification_result=(
+                verification_result
+            ),
+        )
+    )
+
+    if _has_remaining_steps(
+        implementation_result
+    ):
+        return _rearm_next_step_cycle(
+            mission_id=mission_id,
+            implementation_task=(
+                implementation_task
+            ),
+            verification_task=(
+                verification_task
+            ),
+            implementation_result=(
+                implementation_result
+            ),
+            verification_result=(
+                verification_result
+            ),
+        )
+
+    implementation_result = (
+        _append_step_verification_history(
+            implementation_result=(
+                implementation_result
+            ),
+            verification_result=(
+                verification_result
+            ),
+        )
+    )
+
+    implementation_result_text = json.dumps(
+        implementation_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(implementation_result_text) > 95000:
+        raise MissionVerificationError(
+            "Verification完了後の"
+            "IMPLEMENTATION結果が保存上限を超えました。"
+        )
+
+    update_mission_task(
+        mission_id=mission_id,
+        task_id=implementation_task["id"],
+        payload=MissionTaskUpdate(
+            status=implementation_task["status"],
+            result=implementation_result_text,
+            target_path=(
+                implementation_task.get(
+                    "target_path"
+                )
+            ),
+        ),
+    )
 
     result_text = json.dumps(
         verification_result,

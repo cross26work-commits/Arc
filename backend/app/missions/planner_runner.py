@@ -8,9 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from app.database import get_connection
-from app.missions.models import MissionTaskUpdate
-from app.missions.requirement_analyzer import (
-    analyze_requirement,
+from app.missions.dependency_planner import (
+    build_dependency_plan,
+)
+from pydantic import ValidationError
+
+from app.missions.models import (
+    FileOperation,
+    ImplementationPlan,
+    ImplementationStep,
+    MissionTaskUpdate,
+    RequirementAnalyzerResult,
 )
 from app.missions.service import (
     add_mission_log,
@@ -23,43 +31,236 @@ class MissionPlannerError(Exception):
     """Mission計画生成に失敗した場合の例外。"""
 
 
-def _classify_path(path: str) -> str:
-    lowered = path.lower()
+def _load_requirement_contract(
+    task: dict[str, Any],
+) -> RequirementAnalyzerResult:
+    if str(
+        task.get("status") or ""
+    ).strip().upper() != "COMPLETED":
+        raise MissionPlannerError(
+            "REQUIREMENTS Taskが完了していません。"
+        )
 
-    if path.endswith(
+    raw_result = task.get("result")
+
+    if not raw_result:
+        raise MissionPlannerError(
+            "REQUIREMENTS結果が保存されていません。"
+        )
+
+    if isinstance(raw_result, dict):
+        payload = raw_result
+    elif isinstance(raw_result, str):
+        try:
+            payload = json.loads(raw_result)
+        except json.JSONDecodeError as error:
+            raise MissionPlannerError(
+                "REQUIREMENTS結果のJSONを読み取れません。"
+            ) from error
+    else:
+        raise MissionPlannerError(
+            "REQUIREMENTS結果の形式が不正です。"
+        )
+
+    if not isinstance(payload, dict):
+        raise MissionPlannerError(
+            "REQUIREMENTS結果はJSON Objectである必要があります。"
+        )
+
+    try:
+        return RequirementAnalyzerResult.model_validate(
+            payload
+        )
+    except ValidationError as error:
+        raise MissionPlannerError(
+            "REQUIREMENTS結果がRequirement Contractの"
+            "形式に適合していません。"
+        ) from error
+
+
+def _normalize_plan_path(path: str) -> str:
+    return str(path).strip().replace(
+        "\\",
+        "/",
+    )
+
+
+def _is_ignored_plan_path(path: str) -> bool:
+    normalized = _normalize_plan_path(
+        path
+    ).lower()
+
+    parts = {
+        part
+        for part in normalized.split("/")
+        if part
+    }
+
+    ignored_parts = {
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "build",
+    }
+
+    return bool(parts & ignored_parts)
+
+
+def _classify_path(path: str) -> str:
+    normalized = _normalize_plan_path(path)
+    lowered = normalized.lower()
+    name = lowered.rsplit("/", 1)[-1]
+
+    is_python_test = (
+        name.startswith("test_")
+        and name.endswith(".py")
+    )
+
+    is_script_test = name.endswith(
         (
-            "test.py",
             "_test.py",
             ".test.ts",
             ".test.tsx",
             ".spec.ts",
             ".spec.tsx",
+            ".test.js",
+            ".test.jsx",
+            ".spec.js",
+            ".spec.jsx",
         )
-    ) or "/tests/" in lowered:
+    )
+
+    if (
+        lowered.startswith("tests/")
+        or "/tests/" in lowered
+        or is_python_test
+        or is_script_test
+    ):
         return "TEST"
 
     if (
-        "/migrations/" in lowered
+        lowered.startswith("migrations/")
+        or "/migrations/" in lowered
+        or lowered.startswith("schemas/")
         or "/schemas/" in lowered
+        or lowered.startswith("models/")
         or "/models/" in lowered
         or "database" in lowered
     ):
         return "DATA"
 
-    if path.startswith("frontend/"):
-        return "FRONTEND"
+    frontend_extension = lowered.endswith(
+        (
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".css",
+        )
+    )
 
     if (
-        "/api/" in lowered
+        lowered.startswith("frontend/")
+        or lowered.startswith("web/")
+        or lowered.startswith("client/")
+        or lowered.startswith("src/components/")
+        or lowered.startswith("src/pages/")
+        or (
+            lowered.startswith("src/app/")
+            and frontend_extension
+        )
+    ):
+        return "FRONTEND"
+
+    if lowered.endswith(
+        (
+            ".md",
+            ".rst",
+        )
+    ):
+        return "DOCUMENTATION"
+
+    if (
+        name in {
+            "pyproject.toml",
+            "package.json",
+            "package-lock.json",
+            "requirements.txt",
+            "setup.py",
+            "setup.cfg",
+            "tox.ini",
+        }
+        or lowered.endswith(
+            (
+                ".toml",
+                ".yaml",
+                ".yml",
+                ".json",
+                ".ini",
+                ".cfg",
+            )
+        )
+    ):
+        return "CONFIG"
+
+    is_python_backend = (
+        lowered.endswith(".py")
+        and lowered.startswith(
+            (
+                "src/",
+                "app/",
+                "backend/",
+            )
+        )
+    )
+
+    if (
+        is_python_backend
+        or "/api/" in lowered
         or "/routers/" in lowered
         or "/services/" in lowered
         or "/core/" in lowered
-        or path.endswith("main.py")
+        or name == "main.py"
     ):
         return "BACKEND"
 
     return "OTHER"
 
+
+def _extract_explicit_paths(
+    *values: str | None,
+) -> set[str]:
+    import re
+
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_.-])"
+        r"((?:[A-Za-z0-9_.-]+/)+"
+        r"[A-Za-z0-9_.-]+\."
+        r"[A-Za-z0-9]+)"
+    )
+
+    paths: set[str] = set()
+
+    for value in values:
+        if not isinstance(value, str):
+            continue
+
+        for match in pattern.findall(value):
+            normalized = _normalize_plan_path(
+                match
+            )
+
+            if normalized:
+                paths.add(normalized)
+
+    return paths
 
 def _risk_weight(level: str | None) -> int:
     return {
@@ -72,54 +273,134 @@ def _risk_weight(level: str | None) -> int:
 def _select_files(
     candidates: list[dict[str, Any]],
     *,
+    explicit_paths: set[str] | None = None,
     max_files: int = 10,
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
 
-    for item in candidates:
-        path = item.get("path")
+    normalized_explicit_paths = {
+        _normalize_plan_path(path)
+        for path in (
+            explicit_paths or set()
+        )
+        if str(path).strip()
+    }
 
-        if not path:
+    usable_candidates = []
+
+    for item in candidates:
+        raw_path = item.get("path")
+
+        if (
+            not isinstance(raw_path, str)
+            or not raw_path.strip()
+        ):
             continue
 
-        dependency = item.get("dependency") or {}
-        risk = dependency.get("risk") or {}
+        normalized_path = (
+            _normalize_plan_path(raw_path)
+        )
+
+        if _is_ignored_plan_path(
+            normalized_path
+        ):
+            continue
+
+        usable_candidates.append(
+            {
+                **item,
+                "path": normalized_path,
+            }
+        )
+
+    candidate_paths = {
+        item["path"]
+        for item in usable_candidates
+    }
+
+    matched_explicit_paths = (
+        normalized_explicit_paths
+        & candidate_paths
+    )
+
+    if matched_explicit_paths:
+        usable_candidates = [
+            item
+            for item in usable_candidates
+            if item["path"]
+            in matched_explicit_paths
+        ]
+
+    for item in usable_candidates:
+        path = item["path"]
+
+        dependency = item.get(
+            "dependency"
+        )
+
+        if not isinstance(dependency, dict):
+            dependency = {}
+
+        risk = dependency.get("risk")
+
+        if not isinstance(risk, dict):
+            risk = {}
 
         selected.append(
             {
                 "path": path,
                 "role": item.get("role"),
-                "language": item.get("language"),
-                "score": item.get("score", 0),
-                "category": _classify_path(path),
-                "risk_level": risk.get("level", "unknown"),
-                "risk_score": risk.get("score", 0),
-                "direct_dependencies": dependency.get(
-                    "direct_dependencies",
-                    [],
+                "language": item.get(
+                    "language"
                 ),
-                "direct_dependents": dependency.get(
-                    "direct_dependents",
-                    [],
-                ),
-                "affected_count": dependency.get(
-                    "affected_count",
+                "score": item.get(
+                    "score",
                     0,
                 ),
-                "reasons": item.get("reasons", []),
+                "category": _classify_path(
+                    path
+                ),
+                "risk_level": risk.get(
+                    "level",
+                    "unknown",
+                ),
+                "risk_score": risk.get(
+                    "score",
+                    0,
+                ),
+                "direct_dependencies": (
+                    dependency.get(
+                        "direct_dependencies",
+                        [],
+                    )
+                ),
+                "direct_dependents": (
+                    dependency.get(
+                        "direct_dependents",
+                        [],
+                    )
+                ),
+                "affected_count": (
+                    dependency.get(
+                        "affected_count",
+                        0,
+                    )
+                ),
+                "reasons": item.get(
+                    "reasons",
+                    [],
+                ),
             }
         )
 
     selected.sort(
         key=lambda item: (
-            -item["score"],
-            -_risk_weight(item["risk_level"]),
+            -int(item.get("score", 0)),
             item["path"],
         )
     )
 
     return selected[:max_files]
-
 
 def _build_workstreams(
     files: list[dict[str, Any]],
@@ -134,6 +415,8 @@ def _build_workstreams(
         "DATA",
         "FRONTEND",
         "TEST",
+        "CONFIG",
+        "DOCUMENTATION",
         "OTHER",
     ]
 
@@ -142,6 +425,8 @@ def _build_workstreams(
         "DATA": "DB・データモデル",
         "FRONTEND": "Frontend・画面",
         "TEST": "テスト",
+        "CONFIG": "設定",
+        "DOCUMENTATION": "ドキュメント",
         "OTHER": "その他",
     }
 
@@ -323,6 +608,626 @@ def _estimate_effort(
     }
 
 
+def _normalize_risk_level(
+    value: str | None,
+) -> str:
+    normalized = str(
+        value or "UNKNOWN"
+    ).strip().upper()
+
+    if normalized in {
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+    }:
+        return normalized
+
+    return "UNKNOWN"
+
+
+def _normalize_effort_level(
+    value: str | None,
+) -> str:
+    normalized = str(
+        value or "UNKNOWN"
+    ).strip().upper()
+
+    if normalized in {
+        "SMALL",
+        "MEDIUM",
+        "LARGE",
+    }:
+        return normalized
+
+    return "UNKNOWN"
+
+
+def _build_clarification_questions(
+    requirement: RequirementAnalyzerResult,
+) -> list[str]:
+    questions: list[str] = []
+
+    for item in requirement.missing_information:
+        questions.append(
+            f"{item}について追加情報を指定してください。"
+        )
+
+    for item in requirement.ambiguities:
+        questions.append(
+            f"{item}を具体化してください。"
+        )
+
+    deduplicated: list[str] = []
+
+    for question in questions:
+        if question not in deduplicated:
+            deduplicated.append(question)
+
+    return deduplicated[:100]
+
+
+def _to_file_operation(
+    item: dict[str, Any],
+) -> FileOperation:
+    risk_level = _normalize_risk_level(
+        item.get("risk_level")
+    )
+
+    reasons = [
+        str(reason)
+        for reason in item.get("reasons", [])
+        if str(reason).strip()
+    ]
+
+    purpose = (
+        reasons[0]
+        if reasons
+        else (
+            f"{item['path']}をMission目的に"
+            "必要な範囲で更新する。"
+        )
+    )
+
+    return FileOperation(
+        path=item["path"],
+        operation="UPDATE",
+        purpose=purpose,
+        category=item.get("category", "OTHER"),
+        language=item.get("language"),
+        depends_on=[
+            str(value)
+            for value in item.get(
+                "direct_dependencies",
+                [],
+            )
+        ],
+        affected_files=[
+            str(value)
+            for value in item.get(
+                "direct_dependents",
+                [],
+            )
+        ],
+        risk_level=risk_level,
+        reasons=reasons,
+    )
+
+
+def _build_step_dependency_context(
+    *,
+    workstreams: list[dict[str, Any]],
+    dependency_plan: dict[str, Any],
+) -> dict[str, Any]:
+    step_ids = [
+        f"step-{int(stream['position'])}"
+        for stream in workstreams
+    ]
+
+    path_to_step: dict[str, str] = {}
+
+    for stream in workstreams:
+        step_id = (
+            f"step-{int(stream['position'])}"
+        )
+
+        for path in stream.get("files", []):
+            normalized = str(path).replace(
+                "\\",
+                "/",
+            )
+
+            path_to_step[normalized] = step_id
+
+    if dependency_plan.get("valid") is not True:
+        sequential_dependencies: dict[
+            str,
+            list[str],
+        ] = {}
+
+        previous_step_id: str | None = None
+
+        for step_id in step_ids:
+            sequential_dependencies[step_id] = (
+                [previous_step_id]
+                if previous_step_id
+                else []
+            )
+            previous_step_id = step_id
+
+        return {
+            "step_dependencies":
+                sequential_dependencies,
+            "step_execution_order":
+                step_ids,
+            "parallel_step_groups": [],
+            "parallel_step_ids": set(),
+            "file_execution_order": [],
+            "fallback_used": True,
+        }
+
+    step_dependencies: dict[
+        str,
+        set[str],
+    ] = {
+        step_id: set()
+        for step_id in step_ids
+    }
+
+    graph = dependency_plan.get(
+        "graph",
+        {},
+    )
+
+    for edge in graph.get("edges", []):
+        source_path = str(
+            edge.get("from") or ""
+        ).replace("\\", "/")
+        target_path = str(
+            edge.get("to") or ""
+        ).replace("\\", "/")
+
+        source_step = path_to_step.get(
+            source_path
+        )
+        target_step = path_to_step.get(
+            target_path
+        )
+
+        if (
+            source_step is None
+            or target_step is None
+            or source_step == target_step
+        ):
+            continue
+
+        step_dependencies[
+            target_step
+        ].add(source_step)
+
+    file_execution_order = [
+        str(path)
+        for path in dependency_plan.get(
+            "execution_order",
+            [],
+        )
+    ]
+
+    step_execution_order: list[str] = []
+
+    for path in file_execution_order:
+        step_id = path_to_step.get(
+            path.replace("\\", "/")
+        )
+
+        if (
+            step_id is not None
+            and step_id
+            not in step_execution_order
+        ):
+            step_execution_order.append(
+                step_id
+            )
+
+    for step_id in step_ids:
+        if step_id not in step_execution_order:
+            step_execution_order.append(
+                step_id
+            )
+
+    parallel_step_groups: list[
+        list[str]
+    ] = []
+
+    for file_group in dependency_plan.get(
+        "parallel_groups",
+        [],
+    ):
+        step_group: list[str] = []
+
+        for path in file_group:
+            step_id = path_to_step.get(
+                str(path).replace(
+                    "\\",
+                    "/",
+                )
+            )
+
+            if (
+                step_id is not None
+                and step_id not in step_group
+            ):
+                step_group.append(step_id)
+
+        if len(step_group) < 2:
+            continue
+
+        if step_group not in parallel_step_groups:
+            parallel_step_groups.append(
+                step_group
+            )
+
+    parallel_step_ids = {
+        step_id
+        for group in parallel_step_groups
+        for step_id in group
+    }
+
+    return {
+        "step_dependencies": {
+            step_id: sorted(dependencies)
+            for step_id, dependencies
+            in step_dependencies.items()
+        },
+        "step_execution_order":
+            step_execution_order,
+        "parallel_step_groups":
+            parallel_step_groups,
+        "parallel_step_ids":
+            parallel_step_ids,
+        "file_execution_order":
+            file_execution_order,
+        "fallback_used": False,
+    }
+
+
+def _apply_step_dependency_safety_rules(
+    *,
+    workstreams: list[dict[str, Any]],
+    step_dependencies: dict[str, list[str]],
+    parallel_step_ids: set[str],
+) -> tuple[
+    dict[str, list[str]],
+    set[str],
+]:
+    normalized_dependencies = {
+        str(step_id): list(
+            dict.fromkeys(
+                str(value)
+                for value in dependencies
+                if str(value).strip()
+            )
+        )
+        for step_id, dependencies
+        in step_dependencies.items()
+    }
+
+    previous_implementation_step_id: (
+        str | None
+    ) = None
+
+    implementation_categories = {
+        "BACKEND",
+        "DATA",
+        "FRONTEND",
+    }
+
+    ordered_streams = sorted(
+        workstreams,
+        key=lambda item: int(
+            item.get("position", 0)
+        ),
+    )
+
+    for stream in ordered_streams:
+        step_id = (
+            f"step-{int(stream['position'])}"
+        )
+        category = str(
+            stream.get(
+                "category",
+                "OTHER",
+            )
+        ).upper()
+
+        normalized_dependencies.setdefault(
+            step_id,
+            [],
+        )
+
+        if category in implementation_categories:
+            previous_implementation_step_id = (
+                step_id
+            )
+            continue
+
+        if (
+            category == "TEST"
+            and previous_implementation_step_id
+            and previous_implementation_step_id
+            not in normalized_dependencies[
+                step_id
+            ]
+        ):
+            normalized_dependencies[
+                step_id
+            ].append(
+                previous_implementation_step_id
+            )
+
+    dependency_targets = {
+        dependency
+        for dependencies
+        in normalized_dependencies.values()
+        for dependency in dependencies
+    }
+
+    non_parallel_step_ids = {
+        step_id
+        for step_id, dependencies
+        in normalized_dependencies.items()
+        if dependencies
+    } | dependency_targets
+
+    normalized_parallel_step_ids = {
+        step_id
+        for step_id in parallel_step_ids
+        if step_id
+        not in non_parallel_step_ids
+    }
+
+    return (
+        normalized_dependencies,
+        normalized_parallel_step_ids,
+    )
+
+
+def _to_implementation_steps(
+    *,
+    workstreams: list[dict[str, Any]],
+    operations_by_path: dict[str, FileOperation],
+    verification_commands: list[dict[str, str]],
+    step_dependencies: dict[str, list[str]],
+    parallel_step_ids: set[str],
+) -> list[ImplementationStep]:
+    steps: list[ImplementationStep] = []
+
+    for stream in workstreams:
+        position = int(stream["position"])
+        step_id = f"step-{position}"
+
+        file_operations = [
+            operations_by_path[path]
+            for path in stream.get("files", [])
+            if path in operations_by_path
+        ]
+
+        commands = [
+            item["command"]
+            for item in verification_commands
+            if isinstance(item, dict)
+            and item.get("command")
+        ]
+
+        risk_levels = {
+            operation.risk_level
+            for operation in file_operations
+        }
+
+        if "HIGH" in risk_levels:
+            risk_level = "HIGH"
+        elif "MEDIUM" in risk_levels:
+            risk_level = "MEDIUM"
+        elif "LOW" in risk_levels:
+            risk_level = "LOW"
+        else:
+            risk_level = "UNKNOWN"
+
+        dependencies = list(
+            step_dependencies.get(
+                step_id,
+                [],
+            )
+        )
+
+        steps.append(
+            ImplementationStep(
+                step_id=step_id,
+                position=position,
+                title=stream["title"],
+                description=stream["purpose"],
+                category=stream.get(
+                    "category",
+                    "OTHER",
+                ),
+                file_operations=file_operations,
+                depends_on_steps=dependencies,
+                can_run_in_parallel=(
+                    step_id in parallel_step_ids
+                ),
+                verification_commands=commands,
+                completion_criteria=[
+                    (
+                        f"{stream['title']}に含まれる"
+                        "変更が実装されている。"
+                    ),
+                    "関連する検証が成功する。",
+                ],
+                risk_level=risk_level,
+            )
+        )
+
+    return steps
+
+
+def _build_typed_implementation_plan(
+    *,
+    mission: dict[str, Any],
+    requirement: RequirementAnalyzerResult,
+    selected_files: list[dict[str, Any]],
+    workstreams: list[dict[str, Any]],
+    verification_commands: list[dict[str, str]],
+    risk: dict[str, Any],
+    effort: dict[str, Any],
+    approval_summary: str,
+) -> ImplementationPlan:
+    file_operations = [
+        _to_file_operation(item)
+        for item in selected_files
+    ]
+
+    operations_by_path = {
+        operation.path: operation
+        for operation in file_operations
+    }
+
+    dependency_plan = build_dependency_plan(
+        selected_files
+    )
+
+    dependency_context = (
+        _build_step_dependency_context(
+            workstreams=workstreams,
+            dependency_plan=dependency_plan,
+        )
+    )
+
+    (
+        safe_step_dependencies,
+        safe_parallel_step_ids,
+    ) = _apply_step_dependency_safety_rules(
+        workstreams=workstreams,
+        step_dependencies=(
+            dependency_context[
+                "step_dependencies"
+            ]
+        ),
+        parallel_step_ids=(
+            dependency_context[
+                "parallel_step_ids"
+            ]
+        ),
+    )
+
+    dependency_context[
+        "step_dependencies"
+    ] = safe_step_dependencies
+    dependency_context[
+        "parallel_step_ids"
+    ] = safe_parallel_step_ids
+
+    steps = _to_implementation_steps(
+        workstreams=workstreams,
+        operations_by_path=operations_by_path,
+        verification_commands=verification_commands,
+        step_dependencies=(
+            safe_step_dependencies
+        ),
+        parallel_step_ids=(
+            safe_parallel_step_ids
+        ),
+    )
+
+    clarification_questions = (
+        _build_clarification_questions(
+            requirement
+        )
+    )
+
+    command_values = [
+        item["command"]
+        for item in verification_commands
+        if isinstance(item, dict)
+        and item.get("command")
+    ]
+
+    success_criteria = list(
+        requirement.success_criteria
+    )
+
+    if not success_criteria:
+        raw_success_criteria = str(
+            mission.get("success_criteria") or ""
+        ).strip()
+
+        if raw_success_criteria:
+            success_criteria = [
+                raw_success_criteria
+            ]
+
+    return ImplementationPlan(
+        mission_id=mission["id"],
+        project_id=mission["project_id"],
+        project_name=mission["project_name"],
+        objective=mission["objective"],
+        success_criteria=success_criteria,
+        requirement_contract_version=(
+            requirement.contract_version
+        ),
+        requirement_contract=requirement,
+        implementation_possible=(
+            requirement.implementation_possible
+        ),
+        clarification_required=bool(
+            clarification_questions
+            or not requirement.implementation_possible
+        ),
+        clarification_questions=(
+            clarification_questions
+        ),
+        selected_files=file_operations,
+        steps=steps,
+        execution_order=(
+            dependency_context[
+                "step_execution_order"
+            ]
+        ),
+        file_execution_order=(
+            dependency_context[
+                "file_execution_order"
+            ]
+        ),
+        dependency_graph=(
+            dependency_plan.get(
+                "graph",
+                {},
+            )
+        ),
+        dependency_cycles=(
+            dependency_plan.get(
+                "cycles",
+                [],
+            )
+        ),
+        parallel_groups=(
+            dependency_context[
+                "parallel_step_groups"
+            ]
+        ),
+        verification_commands=command_values,
+        overall_risk_level=(
+            _normalize_risk_level(
+                risk.get("level")
+            )
+        ),
+        estimated_effort_level=(
+            _normalize_effort_level(
+                effort.get("level")
+            )
+        ),
+        approval_summary=approval_summary,
+    )
+
+
 def _build_approval_summary(
     *,
     mission: dict[str, Any],
@@ -434,6 +1339,15 @@ def _run_mission_planner_impl(
 ) -> dict[str, Any]:
     mission = get_mission(mission_id)
 
+    requirements_task = next(
+        (
+            task
+            for task in mission["tasks"]
+            if task["task_type"] == "REQUIREMENTS"
+        ),
+        None,
+    )
+
     analysis_task = next(
         (
             task
@@ -452,7 +1366,11 @@ def _run_mission_planner_impl(
         None,
     )
 
-    if analysis_task is None or planning_task is None:
+    if (
+        requirements_task is None
+        or analysis_task is None
+        or planning_task is None
+    ):
         raise MissionPlannerError(
             "ANALYSISまたはPLANNING Taskがありません。"
         )
@@ -506,8 +1424,18 @@ def _run_mission_planner_impl(
             "計画へ使用できる候補ファイルがありません。"
         )
 
-    selected_files = _select_files(candidates)
-    workstreams = _build_workstreams(selected_files)
+    explicit_paths = _extract_explicit_paths(
+        mission.get("objective"),
+        mission.get("success_criteria"),
+    )
+
+    selected_files = _select_files(
+        candidates,
+        explicit_paths=explicit_paths,
+    )
+    workstreams = _build_workstreams(
+        selected_files
+    )
     verification = _build_verification_commands(
         selected_files
     )
@@ -517,9 +1445,8 @@ def _run_mission_planner_impl(
         workstreams,
     )
 
-    requirement = analyze_requirement(
-        objective=mission["objective"],
-        success_criteria=mission["success_criteria"],
+    requirement = _load_requirement_contract(
+        requirements_task
     )
 
     requirement_payload = requirement.model_dump(
@@ -571,6 +1498,43 @@ def _run_mission_planner_impl(
         risk=risk,
         effort=effort,
     )
+
+    typed_plan = _build_typed_implementation_plan(
+        mission=mission,
+        requirement=requirement,
+        selected_files=selected_files,
+        workstreams=workstreams,
+        verification_commands=verification,
+        risk=risk,
+        effort=effort,
+        approval_summary=plan["approval_summary"],
+    )
+
+    plan["typed_plan"] = typed_plan.model_dump(
+        mode="json"
+    )
+    plan["typed_plan_version"] = (
+        typed_plan.plan_version
+    )
+    plan["dependency_plan"] = {
+        "planner_version": (
+            typed_plan.dependency_graph.get(
+                "graph_version"
+            )
+        ),
+        "valid": not bool(
+            typed_plan.dependency_cycles
+        ),
+        "cycles": (
+            typed_plan.dependency_cycles
+        ),
+        "file_execution_order": (
+            typed_plan.file_execution_order
+        ),
+        "parallel_groups": (
+            typed_plan.parallel_groups
+        ),
+    }
 
     result_text = json.dumps(
         plan,
@@ -627,6 +1591,33 @@ def _run_mission_planner_impl(
             ),
             "requirement_risk_count": len(
                 requirement.risks
+            ),
+            "typed_plan_version": (
+                typed_plan.plan_version
+            ),
+            "typed_step_count": len(
+                typed_plan.steps
+            ),
+            "clarification_required": (
+                typed_plan.clarification_required
+            ),
+            "dependency_node_count": (
+                typed_plan.dependency_graph.get(
+                    "node_count",
+                    0,
+                )
+            ),
+            "dependency_edge_count": (
+                typed_plan.dependency_graph.get(
+                    "edge_count",
+                    0,
+                )
+            ),
+            "dependency_cycle_count": len(
+                typed_plan.dependency_cycles
+            ),
+            "parallel_group_count": len(
+                typed_plan.parallel_groups
             ),
         },
     )
