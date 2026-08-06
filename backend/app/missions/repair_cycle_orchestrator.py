@@ -22,6 +22,13 @@ from app.missions.repair_execution_policy import (
 from app.missions.repair_patch_apply import (
     apply_repair_patch_safe,
 )
+from app.missions.repair_policy import (
+    get_repair_policy,
+    serialize_repair_policy,
+)
+from app.missions.repair_policy_approval import (
+    get_repair_policy_approval_safe,
+)
 from app.missions.repair_patch_connector import (
     connect_repair_request_to_patch_generator_safe,
 )
@@ -478,6 +485,101 @@ def _last_step_is_duplicate(
     )
 
 
+def _request_repair_policy(
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    embedded = request.get(
+        "repair_policy"
+    )
+
+    if isinstance(embedded, dict):
+        required_keys = {
+            "failure_category",
+            "repair_action",
+            "resume_stage",
+            "max_retries",
+            "requires_approval",
+        }
+
+        if required_keys.issubset(
+            embedded.keys()
+        ):
+            return dict(embedded)
+
+    return serialize_repair_policy(
+        get_repair_policy(
+            request.get(
+                "failure_category"
+            )
+        )
+    )
+
+
+def _policy_approval_decision(
+    *,
+    mission_id: int,
+    request: dict[str, Any],
+) -> str | None:
+    policy = _request_repair_policy(
+        request
+    )
+
+    if (
+        policy.get("repair_action")
+        != "REQUIRE_APPROVAL"
+        and policy.get(
+            "requires_approval"
+        )
+        is not True
+    ):
+        return None
+
+    result = get_repair_policy_approval_safe(
+        mission_id
+    )
+
+    approval = result.get("approval")
+
+    if not isinstance(approval, dict):
+        return "PENDING"
+
+    if (
+        approval.get("request_id")
+        != request.get("request_id")
+    ):
+        return "PENDING"
+
+    decision = str(
+        approval.get(
+            "decision",
+            "",
+        )
+    ).strip().upper()
+
+    if decision in {
+        "APPROVED",
+        "REJECTED",
+    }:
+        return decision
+
+    return "PENDING"
+
+
+def _policy_blocks_automatic_cycle(
+    request: dict[str, Any],
+) -> bool:
+    policy = _request_repair_policy(
+        request
+    )
+
+    return (
+        policy.get("repair_action")
+        == "STOP_AND_INSPECT"
+        or policy.get("resume_stage")
+        == "STOPPED"
+    )
+
+
 def _determine_stage(
     *,
     mission_id: int,
@@ -492,6 +594,9 @@ def _determine_stage(
         )
 
     request_status = _status(request)
+    repair_policy = _request_repair_policy(
+        request
+    )
 
     if request_status is None:
         raise MissionRepairCycleOrchestratorError(
@@ -502,6 +607,49 @@ def _determine_stage(
         return (
             "CYCLE_COMPLETED",
             "Repair Cycleは完了済みです。",
+        )
+
+    if _policy_blocks_automatic_cycle(
+        request
+    ):
+        return (
+            "STATE_BLOCKED",
+            (
+                "Repair Policy???????????????"
+                " failure_category="
+                f"{repair_policy.get('failure_category')}"
+                " repair_action="
+                f"{repair_policy.get('repair_action')}"
+                " resume_stage="
+                f"{repair_policy.get('resume_stage')}"
+            ),
+        )
+
+    policy_approval_decision = (
+        _policy_approval_decision(
+            mission_id=mission_id,
+            request=request,
+        )
+    )
+
+    if policy_approval_decision == "PENDING":
+        return (
+            "WAIT_POLICY_APPROVAL",
+            (
+                "Repair Category Policy?"
+                "??????????"
+                " failure_category="
+                f"{repair_policy.get('failure_category')}"
+            ),
+        )
+
+    if policy_approval_decision == "REJECTED":
+        return (
+            "STATE_BLOCKED",
+            (
+                "REPAIR_POLICY_REJECTED: "
+                "Repair Category Policy was rejected."
+            ),
         )
 
     if request_status in BLOCKED_STATUSES:
@@ -807,6 +955,17 @@ def run_repair_cycle_step(
         connection=connection_before,
     )
 
+    policy_before = (
+        _request_repair_policy(
+            request_before
+        )
+        if isinstance(
+            request_before,
+            dict,
+        )
+        else None
+    )
+
     signature = _step_signature(
         mission_id=mission_id,
         stage=stage,
@@ -835,7 +994,10 @@ def run_repair_cycle_step(
             "next_action": None,
         }
 
-    if stage == "WAIT_APPROVAL":
+    if stage in {
+        "WAIT_APPROVAL",
+        "WAIT_POLICY_APPROVAL",
+    }:
         evaluation = (
             _latest_policy_evaluation(
                 mission_id=mission_id,
@@ -853,7 +1015,12 @@ def run_repair_cycle_step(
             "stage": stage,
             "executed": False,
             "duplicate": False,
-            "outcome": "WAITING_APPROVAL",
+            "outcome": (
+                "WAITING_POLICY_APPROVAL"
+                if stage
+                == "WAIT_POLICY_APPROVAL"
+                else "WAITING_APPROVAL"
+            ),
             "reason": reason,
             "request_status_before": (
                 _status(request_before)
@@ -930,7 +1097,10 @@ def run_repair_cycle_step(
             **step_record,
             "state_path": str(state_path),
             "next_action": (
-                "MASTER_APPROVAL_REQUIRED"
+                "REPAIR_POLICY_APPROVAL_REQUIRED"
+                if stage
+                == "WAIT_POLICY_APPROVAL"
+                else "MASTER_APPROVAL_REQUIRED"
             ),
             "single_stage_only": True,
             "auto_apply": False,
@@ -949,6 +1119,37 @@ def run_repair_cycle_step(
             "duplicate": False,
             "outcome": "BLOCKED",
             "reason": reason,
+            "repair_policy": policy_before,
+            "failure_category": (
+                policy_before.get(
+                    "failure_category"
+                )
+                if isinstance(
+                    policy_before,
+                    dict,
+                )
+                else None
+            ),
+            "repair_action": (
+                policy_before.get(
+                    "repair_action"
+                )
+                if isinstance(
+                    policy_before,
+                    dict,
+                )
+                else None
+            ),
+            "resume_stage": (
+                policy_before.get(
+                    "resume_stage"
+                )
+                if isinstance(
+                    policy_before,
+                    dict,
+                )
+                else None
+            ),
             "request_status_before": (
                 _status(request_before)
             ),

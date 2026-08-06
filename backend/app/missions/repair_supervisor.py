@@ -275,6 +275,73 @@ def _decision_for_run(
             ),
         }
 
+    if stop_reason == "STATE_BLOCKED":
+        latest_step = cycle.get(
+            "latest_step"
+        )
+
+        if not isinstance(
+            latest_step,
+            dict,
+        ):
+            steps = cycle.get("steps")
+
+            if (
+                isinstance(steps, list)
+                and steps
+                and isinstance(
+                    steps[-1],
+                    dict,
+                )
+            ):
+                latest_step = steps[-1]
+
+        repair_action = (
+            latest_step.get(
+                "repair_action"
+            )
+            if isinstance(
+                latest_step,
+                dict,
+            )
+            else None
+        )
+
+        resume_stage = (
+            latest_step.get(
+                "resume_stage"
+            )
+            if isinstance(
+                latest_step,
+                dict,
+            )
+            else None
+        )
+
+        if (
+            repair_action
+            == "STOP_AND_INSPECT"
+            or resume_stage == "STOPPED"
+        ):
+            return {
+                "supervisor_status": (
+                    "REVIEW_REQUIRED"
+                ),
+                "decision": (
+                    "REPAIR_POLICY_INSPECTION_REQUIRED"
+                ),
+                "recommended_action": (
+                    "INSPECT_FAILURE_AND_POLICY"
+                ),
+                "requires_master_action": True,
+                "can_continue": False,
+                "severity": "WARNING",
+                "reason": (
+                    "Repair Policy???"
+                    "??????????????"
+                ),
+            }
+
     if stop_reason == "MAX_STEPS_REACHED":
         return {
             "supervisor_status": (

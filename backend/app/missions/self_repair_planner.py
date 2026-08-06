@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.missions.repair_policy import (
+    get_repair_policy,
+    normalize_failure_category,
+    serialize_repair_policy,
+)
 from app.missions.service import (
     MissionError,
     add_mission_log,
@@ -25,21 +30,6 @@ REPAIR_PLAN_ROOT = ARC_ROOT / "data" / "repair_plans"
 REPAIR_VERSION = "mission-self-repair-planner-v0.1"
 MAX_TEXT_CHARS = 20000
 MAX_FAILURES = 50
-
-SUPPORTED_FAILURE_CATEGORIES = {
-    "TIMEOUT",
-    "PERMISSION",
-    "DEPENDENCY",
-    "SYNTAX",
-    "IMPORT",
-    "LINT",
-    "TEST",
-    "BUILD",
-    "GIT",
-    "COMMAND",
-    "UNKNOWN",
-}
-
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -103,12 +93,7 @@ def _truncate(value: Any) -> str:
 
 
 def _normalize_category(value: Any) -> str:
-    category = str(value or "UNKNOWN").strip().upper()
-
-    if category not in SUPPORTED_FAILURE_CATEGORIES:
-        return "UNKNOWN"
-
-    return category
+    return normalize_failure_category(value).value
 
 
 def _extract_path_candidates(text: str) -> list[str]:
@@ -478,6 +463,13 @@ def _build_repair_plan(
         )
     )
 
+    policy_rule = get_repair_policy(
+        primary_category
+    )
+    serialized_policy = serialize_repair_policy(
+        policy_rule
+    )
+
     suspected_files = _unique_strings(
         [
             path
@@ -543,6 +535,7 @@ def _build_repair_plan(
         "recommended_checks": _unique_strings(
             recommended_checks
         ),
+        "repair_policy": serialized_policy,
         "status": "PLANNED",
         "auto_apply": False,
         "patch_generated": False,
@@ -811,6 +804,26 @@ def run_self_repair_planner(
             ),
             "failure_count": (
                 repair_plan["failure_count"]
+            ),
+            "repair_action": (
+                repair_plan["repair_policy"][
+                    "repair_action"
+                ]
+            ),
+            "resume_stage": (
+                repair_plan["repair_policy"][
+                    "resume_stage"
+                ]
+            ),
+            "max_retries": (
+                repair_plan["repair_policy"][
+                    "max_retries"
+                ]
+            ),
+            "requires_approval": (
+                repair_plan["repair_policy"][
+                    "requires_approval"
+                ]
             ),
             "suspected_file_count": len(
                 repair_plan["suspected_files"]

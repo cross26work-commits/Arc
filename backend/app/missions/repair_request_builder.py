@@ -12,6 +12,10 @@ from app.missions.models import (
     MissionPatchEdit,
     MissionRepairRequestCreate,
 )
+from app.missions.repair_policy import (
+    get_repair_policy,
+    serialize_repair_policy,
+)
 from app.missions.self_repair_planner import (
     ARC_ROOT,
     REPAIR_PLAN_ROOT,
@@ -38,6 +42,26 @@ ALLOWED_OPERATIONS = {
     "INSERT_BEFORE",
     "INSERT_AFTER",
 }
+
+
+def _repair_policy_payload(
+    repair_plan: dict[str, Any],
+) -> dict[str, Any]:
+    verification = repair_plan.get(
+        "verification",
+        {},
+    )
+
+    if not isinstance(verification, dict):
+        verification = {}
+
+    failure_category = verification.get(
+        "failure_category"
+    )
+
+    return serialize_repair_policy(
+        get_repair_policy(failure_category)
+    )
 
 
 def _now() -> str:
@@ -490,6 +514,10 @@ def create_repair_patch_request(
             "Repair Plan IDがありません。"
         )
 
+    repair_policy = _repair_policy_payload(
+        repair_plan
+    )
+
     signature = _request_signature(
         mission_id=mission_id,
         repair_plan_id=repair_plan_id,
@@ -538,10 +566,20 @@ def create_repair_patch_request(
             )
         ),
         "failure_category": (
-            repair_plan.get(
-                "verification",
-                {},
-            ).get("failure_category")
+            repair_policy["failure_category"]
+        ),
+        "repair_policy": repair_policy,
+        "repair_action": (
+            repair_policy["repair_action"]
+        ),
+        "resume_stage": (
+            repair_policy["resume_stage"]
+        ),
+        "max_retries": (
+            repair_policy["max_retries"]
+        ),
+        "requires_approval": (
+            repair_policy["requires_approval"]
         ),
         "allowed_paths": sorted(
             allowed_paths

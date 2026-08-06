@@ -109,6 +109,12 @@ from app.missions.repair_approval_resume_runner import (
     approve_and_resume_repair_safe,
     resume_repair_safe,
 )
+from app.missions.repair_policy_approval import (
+    MissionRepairPolicyApprovalError,
+    approve_repair_policy_safe,
+    get_repair_policy_approval_safe,
+    reject_repair_policy_safe,
+)
 from app.missions.mission_recovery import (
     MissionRecoveryError,
     inspect_mission_recovery_safe,
@@ -797,6 +803,70 @@ def approve_and_resume_repair_endpoint(
     except (
         MissionRepairApprovalResumeError,
         MissionRepairApprovalError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.get(
+    "/{mission_id}/repair-policy-approval",
+)
+def get_repair_policy_approval_endpoint(
+    mission_id: int,
+) -> dict:
+    try:
+        return get_repair_policy_approval_safe(
+            mission_id
+        )
+    except (
+        MissionRepairPolicyApprovalError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/repair-policy-approve",
+)
+def approve_repair_policy_endpoint(
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> dict:
+    try:
+        return approve_repair_policy_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionRepairPolicyApprovalError,
+        MissionError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/{mission_id}/repair-policy-reject",
+)
+def reject_repair_policy_endpoint(
+    mission_id: int,
+    payload: MissionApprovalDecision,
+) -> dict:
+    try:
+        return reject_repair_policy_safe(
+            mission_id=mission_id,
+            payload=payload,
+        )
+    except (
+        MissionRepairPolicyApprovalError,
         MissionError,
     ) as error:
         raise HTTPException(

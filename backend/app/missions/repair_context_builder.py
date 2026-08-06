@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.missions.repair_policy import (
+    get_repair_policy,
+)
 from app.missions.repair_request_builder import (
     REPAIR_PLAN_ROOT,
     _load_existing_request,
@@ -469,7 +472,10 @@ def _verification_context(
     }
 
 
-def _safety_policy() -> dict[str, Any]:
+def _safety_policy(
+    *,
+    maximum_retry_count: int,
+) -> dict[str, Any]:
     return {
         "auto_apply": False,
         "require_unique_match": True,
@@ -489,8 +495,77 @@ def _safety_policy() -> dict[str, Any]:
             "CREATE_FILE",
         ],
         "maximum_files_per_attempt": 10,
-        "maximum_retry_count": 3,
+        "maximum_retry_count": (
+            maximum_retry_count
+        ),
     }
+
+
+def _resolve_context_retry_limit(
+    repair_request: dict[str, Any],
+) -> int:
+    embedded_policy = repair_request.get(
+        "repair_policy"
+    )
+
+    if isinstance(embedded_policy, dict):
+        policy_limit = embedded_policy.get(
+            "max_retries"
+        )
+    else:
+        policy_limit = None
+
+    if policy_limit is None:
+        policy_limit = get_repair_policy(
+            repair_request.get(
+                "failure_category"
+            )
+        ).max_retries
+
+    try:
+        normalized_policy_limit = int(
+            policy_limit
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise MissionRepairContextError(
+            "Repair Policy Retry????????"
+        ) from error
+
+    requested_limit = repair_request.get(
+        "max_retries",
+        normalized_policy_limit,
+    )
+
+    try:
+        normalized_requested_limit = int(
+            requested_limit
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise MissionRepairContextError(
+            "Repair Retry????????"
+        ) from error
+
+    if normalized_policy_limit < 1:
+        raise MissionRepairContextError(
+            "Repair Policy Retry???"
+            "1????????"
+        )
+
+    if normalized_requested_limit < 1:
+        raise MissionRepairContextError(
+            "Repair Retry???1????????"
+        )
+
+    return min(
+        normalized_requested_limit,
+        normalized_policy_limit,
+    )
 
 
 def build_repair_context(
@@ -510,6 +585,10 @@ def build_repair_context(
     _validate_request(
         mission_id=mission_id,
         repair_request=repair_request,
+    )
+
+    retry_limit = _resolve_context_retry_limit(
+        repair_request
     )
 
     repair_plan = _find_repair_plan(
@@ -627,12 +706,7 @@ def build_repair_context(
                     0,
                 )
             ),
-            "max_retries": (
-                repair_request.get(
-                    "max_retries",
-                    3,
-                )
-            ),
+            "max_retries": retry_limit,
             "retry_history": (
                 repair_request.get(
                     "retry_history",
@@ -716,7 +790,11 @@ def build_repair_context(
             ),
         },
         "safety_policy": (
-            _safety_policy()
+            _safety_policy(
+                maximum_retry_count=(
+                    retry_limit
+                )
+            )
         ),
         "editor_instruction": {
             "goal": (

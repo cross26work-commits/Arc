@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.missions.repair_policy import (
+    get_repair_policy,
+)
 from app.missions.repair_request_builder import (
     REPAIR_PLAN_ROOT,
     _latest_request_path,
@@ -121,6 +124,62 @@ def _normalize_max_retries(
         )
 
     return maximum
+
+
+def _policy_retry_limit(
+    repair_request: dict[str, Any],
+) -> int:
+    embedded_policy = repair_request.get(
+        "repair_policy"
+    )
+
+    if isinstance(embedded_policy, dict):
+        embedded_limit = embedded_policy.get(
+            "max_retries"
+        )
+
+        if embedded_limit is not None:
+            return _normalize_max_retries(
+                embedded_limit
+            )
+
+    failure_category = repair_request.get(
+        "failure_category"
+    )
+
+    return _normalize_max_retries(
+        get_repair_policy(
+            failure_category
+        ).max_retries
+    )
+
+
+def _resolve_retry_limit(
+    *,
+    repair_request: dict[str, Any],
+    requested_max_retries: int | None,
+) -> int:
+    policy_limit = _policy_retry_limit(
+        repair_request
+    )
+
+    candidate = (
+        requested_max_retries
+        if requested_max_retries is not None
+        else repair_request.get("max_retries")
+    )
+
+    if candidate is None:
+        return policy_limit
+
+    requested_limit = _normalize_max_retries(
+        candidate
+    )
+
+    return min(
+        requested_limit,
+        policy_limit,
+    )
 
 
 def _validate_mission_state(
@@ -275,6 +334,11 @@ def prepare_repair_retry(
         repair_request=repair_request,
     )
 
+    retry_limit = _resolve_retry_limit(
+        repair_request=repair_request,
+        requested_max_retries=max_retries,
+    )
+
     current_status = repair_request.get(
         "status"
     )
@@ -293,10 +357,7 @@ def prepare_repair_retry(
                     )
                 ),
                 "max_retries": (
-                    repair_request.get(
-                        "max_retries",
-                        DEFAULT_MAX_RETRIES,
-                    )
+                    retry_limit
                 ),
             },
         }
@@ -316,10 +377,7 @@ def prepare_repair_retry(
                     )
                 ),
                 "max_retries": (
-                    repair_request.get(
-                        "max_retries",
-                        DEFAULT_MAX_RETRIES,
-                    )
+                    retry_limit
                 ),
             },
         }
@@ -330,18 +388,6 @@ def prepare_repair_retry(
 
     retry_count = _normalize_retry_count(
         repair_request.get("retry_count")
-    )
-
-    stored_max = repair_request.get(
-        "max_retries"
-    )
-
-    retry_limit = _normalize_max_retries(
-        (
-            max_retries
-            if max_retries is not None
-            else stored_max
-        )
     )
 
     request_id = str(
