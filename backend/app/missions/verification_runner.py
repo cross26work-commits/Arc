@@ -21,6 +21,9 @@ from app.missions.implementation_runner import (
     _verified_completed_step_paths,
 )
 from app.missions.models import MissionTaskUpdate
+from app.missions.failure_classifier import (
+    classify_command_failure,
+)
 from app.missions.service import (
     MissionError,
     add_mission_log,
@@ -120,68 +123,15 @@ def _classify_failure(
     timed_out: bool,
     returncode: int | None,
 ) -> str:
-    combined = (
-        f"{command_name}\n{stdout}\n{stderr}"
-    ).lower()
+    classification = classify_command_failure(
+        command_name=command_name,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+        returncode=returncode,
+    )
 
-    if timed_out:
-        return "TIMEOUT"
-
-    if "permission denied" in combined:
-        return "PERMISSION"
-
-    if (
-        "no such file or directory" in combined
-        or "not found" in combined
-        or "command not found" in combined
-    ):
-        return "DEPENDENCY"
-
-    if (
-        "syntaxerror" in combined
-        or "syntax error" in combined
-        or "indentationerror" in combined
-    ):
-        return "SYNTAX"
-
-    if (
-        "modulenotfounderror" in combined
-        or "importerror" in combined
-        or "cannot import" in combined
-    ):
-        return "IMPORT"
-
-    if (
-        "eslint" in combined
-        or "lint" in command_name.lower()
-    ):
-        return "LINT"
-
-    if (
-        "pytest" in combined
-        or "test failed" in combined
-        or "failed" in combined
-        and "test" in combined
-    ):
-        return "TEST"
-
-    if (
-        "npm run build" in combined
-        or "build failed" in combined
-        or "failed to compile" in combined
-    ):
-        return "BUILD"
-
-    if "git" in command_name.lower():
-        return "GIT"
-
-    if returncode not in {
-        None,
-        0,
-    }:
-        return "COMMAND"
-
-    return "UNKNOWN"
+    return classification.category.value
 
 
 def _resolve_python_executable(

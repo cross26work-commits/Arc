@@ -28,6 +28,10 @@ from app.missions.code_generation_prompt_builder import (
     CodeGenerationPromptBuilderError,
     build_code_generation_prompt,
 )
+from app.missions.failure_classifier import (
+    classify_code_generation_failure,
+    serialize_failure_classification,
+)
 from app.missions.implementation_step_state import (
     ImplementationStepStateError,
     load_step_execution,
@@ -438,11 +442,30 @@ def _mark_generation_step_failed(
     *,
     execution: ImplementationStepExecution,
     error: str,
+    failure_classification: (
+        dict[str, Any] | None
+    ) = None,
 ) -> ImplementationStepExecution:
+    metadata: dict[str, Any] = {}
+
+    if isinstance(
+        failure_classification,
+        dict,
+    ):
+        metadata[
+            "failure_classification"
+        ] = dict(failure_classification)
+        metadata["failure_category"] = (
+            failure_classification.get(
+                "failure_category"
+            )
+        )
+
     try:
         return update_current_step_status(
             execution,
             status="FAILED",
+            metadata=metadata,
             error=error,
         )
     except ImplementationStepStateError as state_error:
@@ -601,12 +624,19 @@ def _verification_failure_summary(
         except MissionCodeGenerationError:
             verification_payload = {}
 
+    current_metadata = current_result.get(
+        "metadata"
+    )
+
+    if not isinstance(current_metadata, dict):
+        current_metadata = {}
+
     failure_category = (
         verification_payload.get(
             "failure_category"
         )
-        or current_result.get(
-            "error"
+        or current_metadata.get(
+            "failure_category"
         )
         or implementation_payload.get(
             "last_verification_failure",
@@ -1289,11 +1319,25 @@ def run_mission_code_generation(
             or "LLM Pipelineが完了しませんでした。"
         )
 
+        classification = (
+            classify_code_generation_failure(
+                error
+            )
+        )
+        classification_payload = (
+            serialize_failure_classification(
+                classification
+            )
+        )
+
         if step_execution is not None:
             step_execution = (
                 _mark_generation_step_failed(
                     execution=step_execution,
                     error=error,
+                    failure_classification=(
+                        classification_payload
+                    ),
                 )
             )
 
@@ -1315,6 +1359,14 @@ def run_mission_code_generation(
                 "model": adapter.model,
                 "context_sha256": context_sha256,
                 "pipeline_result": pipeline_result,
+                "failure_category": (
+                    classification_payload[
+                        "failure_category"
+                    ]
+                ),
+                "failure_classification": (
+                    classification_payload
+                ),
             },
         )
 

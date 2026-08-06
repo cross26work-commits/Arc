@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.missions.failure_classifier import (
+    classify_patch_failure,
+    serialize_failure_classification,
+)
 from app.missions.implementation_runner import (
     MissionImplementationError,
     apply_mission_implementation_patch_safe,
@@ -203,6 +207,50 @@ def _relative_to_arc(path) -> str:
         return resolved.as_posix()
 
 
+def _build_patch_apply_failure_update(
+    *,
+    repair_request: dict[str, Any],
+    error: BaseException,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+]:
+    classification = classify_patch_failure(
+        error,
+        source="REPAIR_PATCH_APPLY",
+    )
+
+    classification_payload = (
+        serialize_failure_classification(
+            classification
+        )
+    )
+
+    failed_request = {
+        **repair_request,
+        "repair_apply_version": (
+            REPAIR_PATCH_APPLY_VERSION
+        ),
+        "status": "PATCH_APPLY_FAILED",
+        "patch_applied": False,
+        "auto_apply": False,
+        "apply_error": str(error),
+        "patch_apply_failure_category": (
+            classification_payload[
+                "failure_category"
+            ]
+        ),
+        "patch_apply_failure_classification": (
+            classification_payload
+        ),
+    }
+
+    return (
+        failed_request,
+        classification_payload,
+    )
+
+
 def apply_repair_patch(
     *,
     mission_id: int,
@@ -290,16 +338,13 @@ def apply_repair_patch(
             )
         )
     except MissionImplementationError as error:
-        failed_request = {
-            **repair_request,
-            "repair_apply_version": (
-                REPAIR_PATCH_APPLY_VERSION
-            ),
-            "status": "PATCH_APPLY_FAILED",
-            "patch_applied": False,
-            "auto_apply": False,
-            "apply_error": str(error),
-        }
+        (
+            failed_request,
+            classification_payload,
+        ) = _build_patch_apply_failure_update(
+            repair_request=repair_request,
+            error=error,
+        )
 
         _write_json_atomic(
             _latest_request_path(
@@ -326,6 +371,14 @@ def apply_repair_patch(
                 "request_id": request_id,
                 "patch_sha256": patch_sha256,
                 "error": str(error),
+                "failure_category": (
+                    classification_payload[
+                        "failure_category"
+                    ]
+                ),
+                "failure_classification": (
+                    classification_payload
+                ),
                 "patch_applied": False,
                 "auto_apply": False,
             },

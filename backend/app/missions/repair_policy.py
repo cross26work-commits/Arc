@@ -18,6 +18,10 @@ class FailureCategory(StrEnum):
     TEST = "TEST"
     BUILD = "BUILD"
     GIT = "GIT"
+    PATCH = "PATCH"
+    LLM = "LLM"
+    JSON = "JSON"
+    RUNTIME = "RUNTIME"
     COMMAND = "COMMAND"
     UNKNOWN = "UNKNOWN"
 
@@ -107,6 +111,30 @@ REPAIR_POLICY_RULES: dict[
         resume_stage=ResumeStage.STOPPED,
         max_retries=1,
         requires_approval=True,
+    ),
+    FailureCategory.PATCH: RepairPolicyRule(
+        category=FailureCategory.PATCH,
+        action=RepairAction.REGENERATE_PATCH,
+        resume_stage=ResumeStage.RUN_PATCH_GENERATION,
+        max_retries=3,
+    ),
+    FailureCategory.LLM: RepairPolicyRule(
+        category=FailureCategory.LLM,
+        action=RepairAction.REGENERATE_CODE,
+        resume_stage=ResumeStage.RUN_CODE_GENERATION,
+        max_retries=2,
+    ),
+    FailureCategory.JSON: RepairPolicyRule(
+        category=FailureCategory.JSON,
+        action=RepairAction.REGENERATE_CODE,
+        resume_stage=ResumeStage.RUN_CODE_GENERATION,
+        max_retries=2,
+    ),
+    FailureCategory.RUNTIME: RepairPolicyRule(
+        category=FailureCategory.RUNTIME,
+        action=RepairAction.REGENERATE_CODE,
+        resume_stage=ResumeStage.RUN_CODE_GENERATION,
+        max_retries=2,
     ),
     FailureCategory.COMMAND: RepairPolicyRule(
         category=FailureCategory.COMMAND,

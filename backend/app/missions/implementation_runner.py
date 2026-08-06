@@ -10,6 +10,10 @@ from typing import Any
 from uuid import uuid4
 
 from app.database import get_connection
+from app.missions.failure_classifier import (
+    classify_patch_failure,
+    serialize_failure_classification,
+)
 from app.missions.implementation_step_state import (
     ImplementationStepStateError,
     initialize_step_execution,
@@ -32,7 +36,45 @@ from app.projects.reader import EXCLUDED_NAMES
 
 
 class MissionImplementationError(Exception):
-    """Implementation Runnerの実行に失敗した場合の例外。"""
+    """Implementation Runner failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_classification: (
+            dict[str, Any] | None
+        ) = None,
+    ) -> None:
+        super().__init__(message)
+
+        self.failure_classification = (
+            dict(failure_classification)
+            if isinstance(
+                failure_classification,
+                dict,
+            )
+            else None
+        )
+
+    @property
+    def failure_category(
+        self,
+    ) -> str | None:
+        if not isinstance(
+            self.failure_classification,
+            dict,
+        ):
+            return None
+
+        value = self.failure_classification.get(
+            "failure_category"
+        )
+
+        if value is None:
+            return None
+
+        return str(value)
 
 
 ARC_ROOT = Path(__file__).resolve().parents[3]
@@ -41,6 +83,31 @@ IMPLEMENTATION_BACKUP_ROOT = (
     / "data"
     / "implementation_backups"
 )
+
+
+def _patch_implementation_error(
+    error: BaseException | str,
+    *,
+    source: str,
+    message: str | None = None,
+) -> MissionImplementationError:
+    classification = classify_patch_failure(
+        error,
+        source=source,
+    )
+
+    payload = serialize_failure_classification(
+        classification
+    )
+
+    return MissionImplementationError(
+        (
+            message
+            if message is not None
+            else str(error)
+        ),
+        failure_classification=payload,
+    )
 
 
 def _now() -> str:
@@ -186,6 +253,76 @@ def _initialize_plan_step_execution(
     return execution.model_dump(
         mode="json"
     )
+
+
+def _mark_step_patch_failed(
+    *,
+    implementation_result: dict[str, Any],
+    stage: str,
+    error: str,
+    failure_classification: dict[str, Any],
+    failed_at: str,
+) -> dict[str, Any]:
+    step_execution_payload = (
+        implementation_result.get(
+            "step_execution"
+        )
+    )
+
+    if step_execution_payload is None:
+        return implementation_result
+
+    if not isinstance(
+        step_execution_payload,
+        dict,
+    ):
+        raise MissionImplementationError(
+            "Step Execution State is invalid."
+        )
+
+    try:
+        execution = load_step_execution(
+            step_execution_payload
+        )
+    except ImplementationStepStateError as state_error:
+        raise MissionImplementationError(
+            str(state_error)
+        ) from state_error
+
+    if execution.current_step_id is None:
+        return implementation_result
+
+    try:
+        execution = update_current_step_status(
+            execution,
+            status="FAILED",
+            error=error,
+            metadata={
+                "patch_failure_stage": stage,
+                "patch_failed_at": failed_at,
+                "failure_category": (
+                    failure_classification.get(
+                        "failure_category"
+                    )
+                ),
+                "failure_classification": (
+                    failure_classification
+                ),
+            },
+        )
+    except ImplementationStepStateError as state_error:
+        raise MissionImplementationError(
+            str(state_error)
+        ) from state_error
+
+    return {
+        **implementation_result,
+        "step_execution": (
+            execution.model_dump(
+                mode="json"
+            )
+        ),
+    }
 
 
 def _mark_step_patch_applied(
@@ -1618,13 +1755,16 @@ def _run_git_apply_check(
             timeout=60,
         )
     except FileNotFoundError as error:
-        raise MissionImplementationError(
-            "Gitコマンドが見つかりません。"
+        raise _patch_implementation_error(
+            error,
+            source="IMPLEMENTATION_PATCH_CHECK",
+            message="Git command was not found.",
         ) from error
     except subprocess.TimeoutExpired as error:
-        raise MissionImplementationError(
-            "git apply --checkが"
-            "タイムアウトしました。"
+        raise _patch_implementation_error(
+            error,
+            source="IMPLEMENTATION_PATCH_CHECK",
+            message="git apply --check timed out.",
         ) from error
 
     stdout = completed.stdout.strip()
@@ -1634,12 +1774,16 @@ def _run_git_apply_check(
         detail = (
             stderr
             or stdout
-            or "詳細なし"
+            or "No error detail."
         )
 
-        raise MissionImplementationError(
-            "Patch適用可能性検証に失敗しました: "
-            f"{detail}"
+        raise _patch_implementation_error(
+            detail,
+            source="IMPLEMENTATION_PATCH_CHECK",
+            message=(
+                "Patch applicability check failed: "
+                f"{detail}"
+            ),
         )
 
     return {
@@ -1652,6 +1796,145 @@ def _run_git_apply_check(
         "stderr": stderr,
         "applicable": True,
     }
+
+
+def _persist_patch_failure(
+    *,
+    mission_id: int,
+    implementation_task: dict[str, Any],
+    implementation_result: dict[str, Any],
+    stage: str,
+    error: MissionImplementationError,
+) -> dict[str, Any]:
+    failed_at = _now()
+
+    classification_payload = (
+        dict(error.failure_classification)
+        if isinstance(
+            error.failure_classification,
+            dict,
+        )
+        else serialize_failure_classification(
+            classify_patch_failure(
+                error,
+                source=(
+                    "IMPLEMENTATION_"
+                    f"{stage}"
+                ),
+            )
+        )
+    )
+
+    failure_record = {
+        "stage": stage,
+        "failed_at": failed_at,
+        "error": str(error),
+        "failure_category": (
+            classification_payload.get(
+                "failure_category"
+            )
+        ),
+        "failure_classification": (
+            classification_payload
+        ),
+    }
+
+    updated_result = (
+        _mark_step_patch_failed(
+            implementation_result=(
+                implementation_result
+            ),
+            stage=stage,
+            error=str(error),
+            failure_classification=(
+                classification_payload
+            ),
+            failed_at=failed_at,
+        )
+    )
+
+    updated_result = {
+        **updated_result,
+        "last_patch_failure": failure_record,
+        "patch_failure_count": (
+            int(
+                updated_result.get(
+                    "patch_failure_count",
+                    0,
+                )
+                or 0
+            )
+            + 1
+        ),
+    }
+
+    result_text = json.dumps(
+        updated_result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    if len(result_text) > 95000:
+        raise MissionImplementationError(
+            "Patch failure result exceeds "
+            "the storage limit.",
+            failure_classification=(
+                classification_payload
+            ),
+        ) from error
+
+    update_mission_task(
+        mission_id=mission_id,
+        task_id=implementation_task["id"],
+        payload=MissionTaskUpdate(
+            status="RUNNING",
+            result=result_text,
+        ),
+    )
+
+    add_mission_log(
+        mission_id=mission_id,
+        level="ERROR",
+        event_type=(
+            "MISSION_IMPLEMENTATION_PATCH_FAILED"
+        ),
+        message=(
+            f"Implementation Patch stage "
+            f"{stage} failed."
+        ),
+        metadata={
+            "stage": stage,
+            "error": str(error),
+            "failed_at": failed_at,
+            "failure_category": (
+                classification_payload.get(
+                    "failure_category"
+                )
+            ),
+            "failure_classification": (
+                classification_payload
+            ),
+            "implementation_task_id": (
+                implementation_task["id"]
+            ),
+            "current_step_id": (
+                (
+                    updated_result[
+                        "step_execution"
+                    ].get("current_step_id")
+                )
+                if isinstance(
+                    updated_result.get(
+                        "step_execution"
+                    ),
+                    dict,
+                )
+                else None
+            ),
+        },
+    )
+
+    return updated_result
 
 
 def check_mission_implementation_patch(
@@ -1841,10 +2124,24 @@ def check_mission_implementation_patch(
         patch_path.read_bytes()
     )
 
-    apply_check = _run_git_apply_check(
-        project_root=project_root,
-        patch_path=patch_path,
-    )
+    try:
+        apply_check = _run_git_apply_check(
+            project_root=project_root,
+            patch_path=patch_path,
+        )
+    except MissionImplementationError as error:
+        _persist_patch_failure(
+            mission_id=mission_id,
+            implementation_task=(
+                implementation_task
+            ),
+            implementation_result=(
+                implementation_result
+            ),
+            stage="PATCH_CHECK",
+            error=error,
+        )
+        raise
 
     check_result = {
         "patch_engine_version": (
@@ -2397,9 +2694,13 @@ def _apply_patch_transactional(
                 or "詳細なし"
             )
 
-            raise MissionImplementationError(
-                "Patch実適用に失敗しました: "
-                f"{detail}"
+            raise _patch_implementation_error(
+                detail,
+                source="IMPLEMENTATION_PATCH_APPLY",
+                message=(
+                    "Patch apply failed: "
+                    f"{detail}"
+                ),
             )
 
         applied = True
@@ -2508,21 +2809,79 @@ def _apply_patch_transactional(
         )
 
         if not restore_result["working_tree_clean"]:
+            rollback_payload = (
+                serialize_failure_classification(
+                    classify_patch_failure(
+                        (
+                            "rollback incomplete: "
+                            f"{restore_result['remaining_changes']}"
+                        ),
+                        source=(
+                            "IMPLEMENTATION_PATCH_ROLLBACK"
+                        ),
+                    )
+                )
+            )
+
+            rollback_payload[
+                "failure_category"
+            ] = "GIT"
+            rollback_payload[
+                "reason_code"
+            ] = "PATCH_ROLLBACK_INCOMPLETE"
+            rollback_payload[
+                "confidence"
+            ] = 0.99
+
             raise MissionImplementationError(
-                "Patch適用に失敗し、さらに"
-                "自動復元後もGit差分が残っています: "
-                f"{restore_result['remaining_changes']}"
+                (
+                    "Patch apply failed and "
+                    "rollback left Git changes: "
+                    f"{restore_result['remaining_changes']}"
+                ),
+                failure_classification=(
+                    rollback_payload
+                ),
             ) from error
 
         message = str(error)
 
         if applied:
             message += (
-                "／Backupから自動復元しました。"
+                " Patch changes were restored "
+                "from backup."
+            )
+
+        if (
+            isinstance(
+                error,
+                MissionImplementationError,
+            )
+            and isinstance(
+                error.failure_classification,
+                dict,
+            )
+        ):
+            classification_payload = dict(
+                error.failure_classification
+            )
+        else:
+            classification_payload = (
+                serialize_failure_classification(
+                    classify_patch_failure(
+                        error,
+                        source=(
+                            "IMPLEMENTATION_PATCH_APPLY"
+                        ),
+                    )
+                )
             )
 
         raise MissionImplementationError(
-            message
+            message,
+            failure_classification=(
+                classification_payload
+            ),
         ) from error
 
 
@@ -2684,22 +3043,36 @@ def apply_mission_implementation_patch(
             "変更予定ファイル情報が不正です。"
         )
 
-    apply_result = _apply_patch_transactional(
-        project_root=project_root,
-        run_root=run_root,
-        manifest=manifest,
-        patch_path=patch_path,
-        expected_patch_sha256=(
-            payload.expected_patch_sha256.strip()
-        ),
-        expected_changed_paths=[
-            str(path)
-            for path in expected_changed_paths
-        ],
-        allowed_existing_paths=(
-            completed_step_paths
-        ),
-    )
+    try:
+        apply_result = _apply_patch_transactional(
+            project_root=project_root,
+            run_root=run_root,
+            manifest=manifest,
+            patch_path=patch_path,
+            expected_patch_sha256=(
+                payload.expected_patch_sha256.strip()
+            ),
+            expected_changed_paths=[
+                str(path)
+                for path in expected_changed_paths
+            ],
+            allowed_existing_paths=(
+                completed_step_paths
+            ),
+        )
+    except MissionImplementationError as error:
+        _persist_patch_failure(
+            mission_id=mission_id,
+            implementation_task=(
+                implementation_task
+            ),
+            implementation_result=(
+                implementation_result
+            ),
+            stage="PATCH_APPLY",
+            error=error,
+        )
+        raise
 
     applied_at = _now()
 
