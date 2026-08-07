@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -1604,15 +1604,14 @@ def _verify_project_against_manifest(
 
         relative_path = item.get("path")
         expected_hash = item.get("sha256")
+        operation = str(
+            item.get("operation")
+            or "UPDATE"
+        ).strip().upper()
 
         if not isinstance(relative_path, str):
             raise MissionImplementationError(
                 "Manifest内のPathが不正です。"
-            )
-
-        if not isinstance(expected_hash, str):
-            raise MissionImplementationError(
-                "Manifest内のHashが不正です。"
             )
 
         target = (
@@ -1626,6 +1625,29 @@ def _verify_project_against_manifest(
         ):
             raise MissionImplementationError(
                 "ManifestにProject外Pathがあります。"
+            )
+
+        if operation == "CREATE":
+            if target.exists():
+                raise MissionImplementationError(
+                    "CREATE対象がBackup後に既に存在します: "
+                    f"{relative_path}"
+                )
+
+            verified.append(
+                {
+                    "path": relative_path,
+                    "operation": "CREATE",
+                    "sha256": None,
+                    "matched": True,
+                    "exists": False,
+                }
+            )
+            continue
+
+        if not isinstance(expected_hash, str):
+            raise MissionImplementationError(
+                "Manifest内のHashが不正です。"
             )
 
         if not target.exists() or not target.is_file():
@@ -2524,11 +2546,57 @@ def _restore_manifest_files(
         relative_path = item.get("path")
         backup_path = item.get("backup_path")
         expected_hash = item.get("sha256")
+        operation = str(
+            item.get("operation")
+            or "UPDATE"
+        ).strip().upper()
 
         if not isinstance(relative_path, str):
             raise MissionImplementationError(
                 "Restore対象Pathが不正です。"
             )
+
+        normalized_relative_path = (
+            relative_path.strip()
+            .replace("\\", "/")
+            .lstrip("/")
+        )
+
+        if (
+            normalized_restore_paths is not None
+            and normalized_relative_path
+            not in normalized_restore_paths
+        ):
+            continue
+
+        target = (
+            project_root
+            / relative_path
+        ).resolve()
+
+        if not _is_inside_project(
+            project_root,
+            target,
+        ):
+            raise MissionImplementationError(
+                "Restore先がProject領域外です。"
+            )
+
+        if operation == "CREATE":
+            if target.exists():
+                if not target.is_file():
+                    raise MissionImplementationError(
+                        "CREATE Restore対象が"
+                        "ファイルではありません: "
+                        f"{relative_path}"
+                    )
+
+                target.unlink()
+
+            restored.append(
+                normalized_relative_path
+            )
+            continue
 
         if not isinstance(backup_path, str):
             raise MissionImplementationError(
