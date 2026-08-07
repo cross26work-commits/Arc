@@ -40,6 +40,7 @@ def _validate_request(
 ) -> None:
     if repair_request.get("status") not in {
         "REQUESTED",
+        "AWAITING_REPAIR_PATCH_CHECK",
         "PATCH_CHECKED",
     }:
         raise MissionRepairPatchConnectorError(

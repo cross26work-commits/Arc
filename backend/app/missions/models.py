@@ -1,4 +1,4 @@
-from typing import Any, Literal
+﻿from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -125,6 +125,8 @@ class FileOperation(BaseModel):
         "DATA",
         "FRONTEND",
         "TEST",
+        "DOCUMENTATION",
+        "CONFIG",
         "OTHER",
     ] = "OTHER"
     language: str | None = Field(
@@ -173,6 +175,8 @@ class ImplementationStep(BaseModel):
         "DATA",
         "FRONTEND",
         "TEST",
+        "DOCUMENTATION",
+        "CONFIG",
         "VERIFICATION",
         "OTHER",
     ] = "OTHER"

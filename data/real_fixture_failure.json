@@ -1,0 +1,42 @@
+{
+  "captured_at": "2026-08-06T14:28:13.315707+00:00",
+  "expected_repair": {
+    "new_text": "    return left * right",
+    "old_text": "    return left + right",
+    "operation": "REPLACE_UNIQUE",
+    "path": "src/calculator.py"
+  },
+  "failed_test_files": [
+    "tests/test_calculator.py"
+  ],
+  "failure_category": "TEST",
+  "failure_source": "VERIFICATION",
+  "file_evidence": {
+    "target_content": "def add(left: int, right: int) -> int:\n    \"\"\"Return the sum of two integers.\"\"\"\n    return left + right\n\n\ndef subtract(left: int, right: int) -> int:\n    \"\"\"Return the difference between two integers.\"\"\"\n    return left - right\n\n\ndef multiply(left: int, right: int) -> int:\n    \"\"\"Return the product of two integers.\"\"\"\n    return left + right\n",
+    "target_sha256": "8e524da7e78d75a61b760dcf7c600643f101ded84ec7d007b0c95500a561d44a",
+    "test_content": "from src.calculator import add, subtract, multiply\n\n\ndef test_add() -> None:\n    assert add(2, 3) == 5\n\n\ndef test_subtract() -> None:\n    assert subtract(5, 3) == 2\n\n\ndef test_multiply() -> None:\n    assert multiply(3, 4) == 12\n",
+    "test_sha256": "7afffbaaca044477f05e8ae7a93e77e90ff6686147f48e7bb558a702f593baba"
+  },
+  "fixture_root": "C:\\Users\\closs\\ArcRepairFixture",
+  "reason_code": "REAL_FIXTURE_TEST_FAILURE",
+  "suspected_files": [
+    "src/calculator.py"
+  ],
+  "verification": {
+    "executed_command_count": 1,
+    "passed": false,
+    "requested_command_count": 1,
+    "results": [
+      {
+        "category": "TEST",
+        "command": "python -m pytest -q",
+        "failure_category": "TEST",
+        "failure_detail": "test_multiply expected 12 but multiply(3, 4) returned 7",
+        "name": "pytest",
+        "passed": false,
+        "returncode": 1,
+        "timed_out": false
+      }
+    ]
+  }
+}

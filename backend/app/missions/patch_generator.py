@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import difflib
 import json
@@ -189,7 +189,9 @@ def _apply_single_edit(
 
         if count == 0:
             raise MissionPatchGeneratorError(
-                "????????????????"
+                "REPLACE_UNIQUE old_text was not found. "
+                f"path={edit.path!r} "
+                f"old_text_preview={old_text[:200]!r}"
             )
 
         if count != 1:

@@ -44,6 +44,118 @@ ALLOWED_OPERATIONS = {
 }
 
 
+FAILURE_SOURCE_VERIFICATION = "VERIFICATION"
+FAILURE_SOURCE_IMPLEMENTATION_PATCH = (
+    "IMPLEMENTATION_PATCH"
+)
+
+
+def _repair_failure_source(
+    repair_plan: dict[str, Any],
+) -> str:
+    value = str(
+        repair_plan.get(
+            "failure_source"
+        )
+        or FAILURE_SOURCE_VERIFICATION
+    ).strip().upper()
+
+    if value not in {
+        FAILURE_SOURCE_VERIFICATION,
+        FAILURE_SOURCE_IMPLEMENTATION_PATCH,
+    }:
+        raise MissionRepairRequestError(
+            "Unsupported Repair failure source: "
+            f"{value}"
+        )
+
+    return value
+
+
+def _validate_repair_failure_source(
+    *,
+    failure_source: str,
+    implementation_task: dict[str, Any],
+    verification_task: dict[str, Any],
+) -> dict[str, Any]:
+    if (
+        failure_source
+        == FAILURE_SOURCE_VERIFICATION
+    ):
+        if verification_task["status"] not in {
+            "PENDING",
+            "FAILED",
+        }:
+            raise MissionRepairRequestError(
+                "Verification Task is not in "
+                "a repairable state."
+            )
+
+        verification = _load_json_result(
+            verification_task,
+            label="VERIFICATION",
+        )
+
+        if verification.get("passed") is not False:
+            raise MissionRepairRequestError(
+                "Verification failure result "
+                "could not be confirmed."
+            )
+
+        return {
+            "failure_source": (
+                FAILURE_SOURCE_VERIFICATION
+            ),
+            "failure_payload": verification,
+        }
+
+    if implementation_task["status"] not in {
+        "READY",
+        "RUNNING",
+    }:
+        raise MissionRepairRequestError(
+            "IMPLEMENTATION Task is not in "
+            "a patch-repairable state."
+        )
+
+    implementation = _load_json_result(
+        implementation_task,
+        label="IMPLEMENTATION",
+    )
+
+    patch_failure = implementation.get(
+        "last_patch_failure"
+    )
+
+    if not isinstance(
+        patch_failure,
+        dict,
+    ):
+        raise MissionRepairRequestError(
+            "Implementation Patch failure "
+            "could not be confirmed."
+        )
+
+    failure_category = str(
+        patch_failure.get(
+            "failure_category"
+        )
+        or ""
+    ).strip().upper()
+
+    if not failure_category:
+        raise MissionRepairRequestError(
+            "Patch failure category is missing."
+        )
+
+    return {
+        "failure_source": (
+            FAILURE_SOURCE_IMPLEMENTATION_PATCH
+        ),
+        "failure_payload": patch_failure,
+    }
+
+
 def _repair_policy_payload(
     repair_plan: dict[str, Any],
 ) -> dict[str, Any]:
@@ -62,6 +174,18 @@ def _repair_policy_payload(
     return serialize_repair_policy(
         get_repair_policy(failure_category)
     )
+
+
+def _safe_relative(
+    path: Path,
+) -> str:
+    try:
+        return (
+            path.relative_to(ARC_ROOT)
+            .as_posix()
+        )
+    except ValueError:
+        return path.as_posix()
 
 
 def _now() -> str:
@@ -429,25 +553,6 @@ def create_repair_patch_request(
             "修復可能状態ではありません。"
         )
 
-    if verification_task["status"] not in {
-        "PENDING",
-        "FAILED",
-    }:
-        raise MissionRepairRequestError(
-            "Verification失敗後に"
-            "Repair Requestを生成してください。"
-        )
-
-    verification = _load_json_result(
-        verification_task,
-        label="VERIFICATION",
-    )
-
-    if verification.get("passed") is not False:
-        raise MissionRepairRequestError(
-            "Verification失敗結果を確認できません。"
-        )
-
     planning = _load_json_result(
         planning_task,
         label="PLANNING",
@@ -472,6 +577,26 @@ def create_repair_patch_request(
         raise MissionRepairRequestError(
             "Repair Planの安全状態が不正です。"
         )
+
+    failure_source = _repair_failure_source(
+        repair_plan
+    )
+
+    validated_failure = (
+        _validate_repair_failure_source(
+            failure_source=failure_source,
+            implementation_task=(
+                implementation_task
+            ),
+            verification_task=(
+                verification_task
+            ),
+        )
+    )
+
+    failure_payload = validated_failure[
+        "failure_payload"
+    ]
 
     allowed_paths = _allowed_repair_paths(
         planning=planning,
@@ -538,11 +663,11 @@ def create_repair_patch_request(
             "repair_request": existing,
             "storage": {
                 "latest_path": (
+                    _safe_relative(
                     _latest_request_path(
                         mission_id
                     )
-                    .relative_to(ARC_ROOT)
-                    .as_posix()
+                )
                 ),
                 "duplicate": True,
             },
@@ -560,6 +685,18 @@ def create_repair_patch_request(
         "project_id": mission["project_id"],
         "project_name": mission["project_name"],
         "repair_plan_id": repair_plan_id,
+        "failure_source": failure_source,
+        "failure_source_version": (
+            repair_plan.get(
+                "failure_source_version"
+            )
+        ),
+        "failure_signature": (
+            repair_plan.get(
+                "verification_failure_signature"
+            )
+        ),
+        "failure_payload": failure_payload,
         "verification_failure_signature": (
             repair_plan.get(
                 "verification_failure_signature"
@@ -640,6 +777,12 @@ def create_repair_patch_request(
                 REPAIR_REQUEST_VERSION
             ),
             "request_id": request_id,
+            "failure_source": failure_source,
+            "failure_category": (
+                repair_policy[
+                    "failure_category"
+                ]
+            ),
             "repair_plan_id": repair_plan_id,
             "operation_count": len(
                 serialized_edits
@@ -652,9 +795,9 @@ def create_repair_patch_request(
             "patch_applied": False,
             "auto_apply": False,
             "latest_path": (
-                latest_path
-                .relative_to(ARC_ROOT)
-                .as_posix()
+                _safe_relative(
+                    latest_path
+                )
             ),
         },
     )
@@ -664,14 +807,14 @@ def create_repair_patch_request(
         "repair_request": repair_request,
         "storage": {
             "latest_path": (
-                latest_path
-                .relative_to(ARC_ROOT)
-                .as_posix()
+                _safe_relative(
+                    latest_path
+                )
             ),
             "archive_path": (
-                archive_path
-                .relative_to(ARC_ROOT)
-                .as_posix()
+                _safe_relative(
+                    archive_path
+                )
             ),
             "duplicate": False,
         },

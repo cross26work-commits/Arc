@@ -31,6 +31,18 @@ REPAIR_VERSION = "mission-self-repair-planner-v0.1"
 MAX_TEXT_CHARS = 20000
 MAX_FAILURES = 50
 
+def _safe_relative(
+    path: Path,
+) -> str:
+    try:
+        return (
+            path.relative_to(ARC_ROOT)
+            .as_posix()
+        )
+    except ValueError:
+        return path.as_posix()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -179,6 +191,31 @@ def _collect_failures(
             or verification.get("failure_category")
         )
 
+        explicit_suspected_files = (
+            item.get("suspected_files")
+        )
+
+        if not isinstance(
+            explicit_suspected_files,
+            list,
+        ):
+            explicit_suspected_files = []
+
+        suspected_files = _unique_strings(
+            [
+                *[
+                    str(value)
+                    for value in (
+                        explicit_suspected_files
+                    )
+                    if str(value).strip()
+                ],
+                *_extract_path_candidates(
+                    output
+                ),
+            ]
+        )
+
         failures.append(
             {
                 "index": index,
@@ -192,7 +229,7 @@ def _collect_failures(
                 "stdout": stdout,
                 "stderr": stderr,
                 "suspected_files": (
-                    _extract_path_candidates(output)
+                    suspected_files
                 ),
             }
         )
@@ -503,6 +540,20 @@ def _build_repair_plan(
             "title": mission["title"],
             "objective": mission["objective"],
         },
+        "failure_source": str(
+            verification.get(
+                "failure_source"
+            )
+            or FAILURE_SOURCE_VERIFICATION
+        ),
+        "failure_source_version": (
+            verification.get(
+                "source_version"
+            )
+            or verification.get(
+                "verification_version"
+            )
+        ),
         "verification": {
             "verification_version": (
                 verification.get(
@@ -658,6 +709,197 @@ def _write_json_atomic(
     )
 
 
+FAILURE_SOURCE_VERIFICATION = "VERIFICATION"
+FAILURE_SOURCE_CODE_GENERATION = "CODE_GENERATION"
+FAILURE_SOURCE_IMPLEMENTATION_PATCH = (
+    "IMPLEMENTATION_PATCH"
+)
+
+
+def _load_optional_task_result(
+    task: dict[str, Any],
+) -> dict[str, Any] | None:
+    raw_result = task.get("result")
+
+    if not raw_result:
+        return None
+
+    try:
+        result = json.loads(raw_result)
+    except json.JSONDecodeError as error:
+        raise MissionSelfRepairPlannerError(
+            "Task result JSON is invalid."
+        ) from error
+
+    if not isinstance(result, dict):
+        raise MissionSelfRepairPlannerError(
+            "Task result must be an object."
+        )
+
+    return result
+
+
+def _patch_failure_payload(
+    *,
+    implementation_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    failure = implementation_result.get(
+        "last_patch_failure"
+    )
+
+    if not isinstance(failure, dict):
+        return None
+
+    category = _normalize_category(
+        failure.get("failure_category")
+    )
+
+    classification = failure.get(
+        "failure_classification"
+    )
+
+    if not isinstance(classification, dict):
+        classification = {}
+
+    stage = str(
+        failure.get("stage")
+        or "PATCH"
+    ).strip()
+
+    error_text = str(
+        failure.get("error")
+        or ""
+    )
+
+    suspected_files: list[str] = []
+
+    step_execution = implementation_result.get(
+        "step_execution"
+    )
+
+    if isinstance(step_execution, dict):
+        current_step_id = step_execution.get(
+            "current_step_id"
+        )
+        results = step_execution.get("results")
+
+        if (
+            current_step_id
+            and isinstance(results, dict)
+        ):
+            current_result = results.get(
+                str(current_step_id)
+            )
+
+            if isinstance(current_result, dict):
+                metadata = current_result.get(
+                    "metadata"
+                )
+
+                if isinstance(metadata, dict):
+                    for key in (
+                        "changed_files",
+                        "target_files",
+                        "suspected_files",
+                    ):
+                        values = metadata.get(key)
+
+                        if isinstance(values, list):
+                            suspected_files.extend(
+                                str(value)
+                                for value in values
+                                if str(value).strip()
+                            )
+
+    return {
+        "failure_source": (
+            FAILURE_SOURCE_IMPLEMENTATION_PATCH
+        ),
+        "source_version": (
+            "implementation-patch-failure-v0.1"
+        ),
+        "passed": False,
+        "failure_category": category,
+        "results": [
+            {
+                "passed": False,
+                "name": stage,
+                "command": None,
+                "category": "PATCH",
+                "failure_category": category,
+                "returncode": None,
+                "timed_out": (
+                    category == "TIMEOUT"
+                ),
+                "cwd": None,
+                "stdout": "",
+                "stderr": error_text,
+                "suspected_files": (
+                    _unique_strings(
+                        suspected_files
+                    )
+                ),
+                "failure_classification": (
+                    classification
+                ),
+                "failed_at": failure.get(
+                    "failed_at"
+                ),
+            }
+        ],
+    }
+
+
+def _resolve_repair_failure_source(
+    *,
+    mission: dict[str, Any],
+    implementation_task: dict[str, Any],
+    verification_task: dict[str, Any],
+) -> dict[str, Any]:
+    implementation_result = (
+        _load_optional_task_result(
+            implementation_task
+        )
+    )
+
+    if isinstance(
+        implementation_result,
+        dict,
+    ):
+        patch_payload = _patch_failure_payload(
+            implementation_result=(
+                implementation_result
+            )
+        )
+
+        if patch_payload is not None:
+            return patch_payload
+
+    verification = _load_json_result(
+        verification_task,
+        label="VERIFICATION",
+    )
+
+    if verification.get("passed") is True:
+        raise MissionSelfRepairPlannerError(
+            "Successful Verification cannot "
+            "be used as a repair source."
+        )
+
+    if verification.get("passed") is not False:
+        raise MissionSelfRepairPlannerError(
+            "Verification failure state "
+            "could not be confirmed."
+        )
+
+    return {
+        **verification,
+        "failure_source": (
+            FAILURE_SOURCE_VERIFICATION
+        ),
+    }
+
+
 def run_self_repair_planner(
     mission_id: int,
 ) -> dict[str, Any]:
@@ -700,29 +942,24 @@ def run_self_repair_planner(
             "Repair Planを生成してください。"
         )
 
-    verification = _load_json_result(
-        verification_task,
-        label="VERIFICATION",
+    failure_source = (
+        _resolve_repair_failure_source(
+            mission=mission,
+            implementation_task=(
+                implementation_task
+            ),
+            verification_task=(
+                verification_task
+            ),
+        )
     )
 
-    if verification.get("passed") is True:
-        raise MissionSelfRepairPlannerError(
-            "成功済みVerificationには"
-            "Repair Planを生成できません。"
-        )
-
-    if verification.get("passed") is not False:
-        raise MissionSelfRepairPlannerError(
-            "Verification失敗状態を"
-            "確認できません。"
-        )
-
     failures = _collect_failures(
-        verification
+        failure_source
     )
 
     signature = _failure_signature(
-        verification,
+        failure_source,
         failures,
     )
 
@@ -742,11 +979,11 @@ def run_self_repair_planner(
             "repair_plan": existing_plan,
             "storage": {
                 "latest_path": (
-                    _latest_plan_path(
-                        mission_id
+                    _safe_relative(
+                        _latest_plan_path(
+                            mission_id
+                        )
                     )
-                    .relative_to(ARC_ROOT)
-                    .as_posix()
                 ),
                 "duplicate": True,
             },
@@ -754,7 +991,7 @@ def run_self_repair_planner(
 
     repair_plan = _build_repair_plan(
         mission=mission,
-        verification=verification,
+        verification=failure_source,
         failures=failures,
     )
 
@@ -797,6 +1034,11 @@ def run_self_repair_planner(
             "repair_plan_id": (
                 repair_plan["repair_plan_id"]
             ),
+            "failure_source": (
+                repair_plan.get(
+                    "failure_source"
+                )
+            ),
             "failure_category": (
                 repair_plan["verification"][
                     "failure_category"
@@ -831,9 +1073,9 @@ def run_self_repair_planner(
             "status": "PLANNED",
             "auto_apply": False,
             "latest_path": (
-                latest_path
-                .relative_to(ARC_ROOT)
-                .as_posix()
+                _safe_relative(
+                    latest_path
+                )
             ),
         },
     )
@@ -843,14 +1085,14 @@ def run_self_repair_planner(
         "repair_plan": repair_plan,
         "storage": {
             "latest_path": (
-                latest_path
-                .relative_to(ARC_ROOT)
-                .as_posix()
+                _safe_relative(
+                    latest_path
+                )
             ),
             "archive_path": (
-                archive_path
-                .relative_to(ARC_ROOT)
-                .as_posix()
+                _safe_relative(
+                    archive_path
+                )
             ),
             "duplicate": False,
         },

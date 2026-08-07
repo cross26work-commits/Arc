@@ -330,6 +330,26 @@ def _start_generation_step(
     if execution is None:
         return None
 
+    current_step_id = execution.current_step_id
+
+    if current_step_id is not None:
+        current_result = execution.results.get(
+            current_step_id
+        )
+
+        if (
+            current_result is not None
+            and current_result.status == "GENERATING"
+        ):
+            execution = update_current_step_status(
+                execution,
+                status="FAILED",
+                error=(
+                    "Recovered interrupted Code Generation "
+                    "state before retry."
+                ),
+            )
+
     try:
         execution = start_current_step(
             execution
@@ -1619,7 +1639,27 @@ def run_mission_code_generation_safe(
             str(error)
         ) from error
     except Exception as error:
+        error_type = type(error).__name__
+        error_repr = repr(error)
+
+        add_mission_log(
+            mission_id=mission_id,
+            level="ERROR",
+            event_type="CODE_GENERATION_UNEXPECTED_ERROR",
+            message=(
+                "Unexpected Code Generation error: "
+                f"{error_type}: {error_repr}"
+            ),
+            metadata={
+                "runner_version": (
+                    MISSION_CODE_GENERATION_RUNNER_VERSION
+                ),
+                "error_type": error_type,
+                "error_repr": error_repr,
+            },
+        )
+
         raise MissionCodeGenerationError(
-            "Mission Code Generation実行に"
-            f"失敗しました: {error}"
+            "Mission Code Generation failed with "
+            f"{error_type}: {error_repr}"
         ) from error

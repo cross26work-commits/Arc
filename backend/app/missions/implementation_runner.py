@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -210,6 +210,22 @@ def _load_plan(
         )
 
     selected_files = plan.get("selected_files")
+
+    typed_plan = plan.get("typed_plan")
+
+    if isinstance(typed_plan, dict):
+        typed_selected_files = typed_plan.get(
+            "selected_files"
+        )
+
+        if isinstance(
+            typed_selected_files,
+            list,
+        ) and typed_selected_files:
+            selected_files = typed_selected_files
+            plan["selected_files"] = (
+                typed_selected_files
+            )
 
     if not isinstance(selected_files, list):
         raise MissionImplementationError(
@@ -492,16 +508,53 @@ def _validate_selected_files(
                 f"指定されています: {relative_path}"
             )
 
-        if not target.exists():
-            raise MissionImplementationError(
-                "実装対象ファイルが存在しません: "
-                f"{relative_path}"
-            )
+        operation = str(
+            item.get("operation")
+            or "UPDATE"
+        ).strip().upper()
 
-        if not target.is_file():
+        if operation == "CREATE":
+            if target.exists():
+                raise MissionImplementationError(
+                    "CREATE target already exists: "
+                    f"{relative_path}"
+                )
+
+            parent = target.parent
+
+            if not _is_inside_project(
+                project_root,
+                parent,
+            ):
+                raise MissionImplementationError(
+                    "CREATE target parent is outside "
+                    "the project root: "
+                    f"{relative_path}"
+                )
+
+            size_bytes = 0
+
+        elif operation == "UPDATE":
+            if not target.exists():
+                raise MissionImplementationError(
+                    "Implementation UPDATE target "
+                    "does not exist: "
+                    f"{relative_path}"
+                )
+
+            if not target.is_file():
+                raise MissionImplementationError(
+                    "Implementation UPDATE target "
+                    "is not a file: "
+                    f"{relative_path}"
+                )
+
+            size_bytes = target.stat().st_size
+
+        else:
             raise MissionImplementationError(
-                "実装対象がファイルではありません: "
-                f"{relative_path}"
+                "Unsupported implementation "
+                f"operation: {operation}"
             )
 
         if relative_path in seen_paths:
@@ -512,9 +565,10 @@ def _validate_selected_files(
         validated.append(
             {
                 "path": relative_path,
+                "operation": operation,
                 "role": item.get("role"),
                 "score": item.get("score"),
-                "size_bytes": target.stat().st_size,
+                "size_bytes": size_bytes,
             }
         )
 

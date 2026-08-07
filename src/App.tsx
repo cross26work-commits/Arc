@@ -367,6 +367,12 @@ function App() {
   const [isDependencyLoading, setIsDependencyLoading] = useState(false);
   const activeProject = projects[0] ?? null;
 
+  const isCurrentMissionRunning =
+    currentMission !== null &&
+    ["APPROVED", "RUNNING", "VERIFYING"].includes(
+      currentMission.status
+    );
+
   const loadCurrentMission = async (
     projectId: number
   ) => {
@@ -692,7 +698,7 @@ function App() {
       return;
     }
 
-    if (currentMission) {
+    if (isCurrentMissionRunning) {
       setMissionMessage(
         "現在実行中のMissionがあります。完了または中止後に新しいMissionを作成してください。"
       );
@@ -1720,12 +1726,12 @@ function App() {
                   type="submit"
                   disabled={
                     isMissionLoading ||
-                    currentMission !== null
+                    isCurrentMissionRunning
                   }
                 >
                   {isMissionLoading
                     ? "作成中..."
-                    : currentMission
+                    : isCurrentMissionRunning
                       ? "Mission実行中"
                       : "Missionを作成"}
                 </button>

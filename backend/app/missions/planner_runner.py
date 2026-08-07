@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 
@@ -29,6 +29,36 @@ from app.missions.service import (
 
 class MissionPlannerError(Exception):
     """Mission計画生成に失敗した場合の例外。"""
+
+
+def _get_project_path(
+    project_id: int,
+) -> str:
+    with get_connection() as connection:
+        project = connection.execute(
+            """
+            SELECT path
+            FROM projects
+            WHERE id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+
+    if project is None:
+        raise MissionPlannerError(
+            f"Project was not found: {project_id}"
+        )
+
+    project_path = str(
+        project["path"] or ""
+    ).strip()
+
+    if not project_path:
+        raise MissionPlannerError(
+            f"Project path is empty: {project_id}"
+        )
+
+    return project_path
 
 
 def _load_requirement_contract(
@@ -313,23 +343,51 @@ def _select_files(
             }
         )
 
-    candidate_paths = {
-        item["path"]
+    candidate_by_path = {
+        item["path"]: item
         for item in usable_candidates
     }
 
-    matched_explicit_paths = (
-        normalized_explicit_paths
-        & candidate_paths
-    )
+    if normalized_explicit_paths:
+        explicit_candidates: list[
+            dict[str, Any]
+        ] = []
 
-    if matched_explicit_paths:
-        usable_candidates = [
-            item
-            for item in usable_candidates
-            if item["path"]
-            in matched_explicit_paths
-        ]
+        for explicit_path in sorted(
+            normalized_explicit_paths
+        ):
+            existing = candidate_by_path.get(
+                explicit_path
+            )
+
+            if existing is not None:
+                explicit_candidates.append(
+                    existing
+                )
+                continue
+
+            explicit_candidates.append(
+                {
+                    "path": explicit_path,
+                    "role": (
+                        "Explicit mission target"
+                    ),
+                    "language": None,
+                    "score": 1000,
+                    "dependency": {},
+                    "reasons": [
+                        (
+                            "Explicitly specified "
+                            "in Mission objective "
+                            "or success criteria."
+                        )
+                    ],
+                }
+            )
+
+        usable_candidates = (
+            explicit_candidates
+        )
 
     for item in usable_candidates:
         path = item["path"]
@@ -668,6 +726,8 @@ def _build_clarification_questions(
 
 def _to_file_operation(
     item: dict[str, Any],
+    *,
+    project_path: str,
 ) -> FileOperation:
     risk_level = _normalize_risk_level(
         item.get("risk_level")
@@ -688,9 +748,34 @@ def _to_file_operation(
         )
     )
 
+    project_root = Path(
+        project_path
+    ).expanduser().resolve()
+
+    target_path = (
+        project_root
+        / str(item["path"])
+    ).resolve()
+
+    try:
+        target_path.relative_to(
+            project_root
+        )
+    except ValueError as error:
+        raise MissionPlannerError(
+            "Planned file path is outside "
+            f"the project root: {item['path']}"
+        ) from error
+
+    operation = (
+        "UPDATE"
+        if target_path.exists()
+        else "CREATE"
+    )
+
     return FileOperation(
         path=item["path"],
-        operation="UPDATE",
+        operation=operation,
         purpose=purpose,
         category=item.get("category", "OTHER"),
         language=item.get("language"),
@@ -1080,8 +1165,15 @@ def _build_typed_implementation_plan(
     effort: dict[str, Any],
     approval_summary: str,
 ) -> ImplementationPlan:
+    project_path = _get_project_path(
+        mission["project_id"]
+    )
+
     file_operations = [
-        _to_file_operation(item)
+        _to_file_operation(
+            item,
+            project_path=project_path,
+        )
         for item in selected_files
     ]
 

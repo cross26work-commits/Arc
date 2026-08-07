@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -13,8 +13,22 @@ from app.code_generation.llm_adapter import (
 )
 from app.code_generation.patch_integration import (
     CodeGenerationPatchIntegrationError,
-    run_code_generation_patch_integration,
+    run_code_generation_patch_integration_safe,
 )
+
+
+def run_code_generation_patch_integration(
+    *,
+    mission_id: int,
+    payload: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Backward-compatible integration entry point."""
+    return run_code_generation_patch_integration_safe(
+        mission_id=mission_id,
+        payload=payload,
+        context=context,
+    )
 
 
 LLM_PIPELINE_VERSION = (

@@ -35,6 +35,7 @@ MAX_FILE_BYTES = 200_000
 MAX_TOTAL_BYTES = 1_000_000
 
 ALLOWED_REPAIR_STATUSES = {
+    "REQUESTED",
     "AWAITING_REPAIR_REQUEST",
     "REPAIR_FAILED",
 }
@@ -426,9 +427,165 @@ def _validate_request(
             )
 
 
+FAILURE_SOURCE_VERIFICATION = "VERIFICATION"
+FAILURE_SOURCE_IMPLEMENTATION_PATCH = (
+    "IMPLEMENTATION_PATCH"
+)
+
+
+def _failure_source_context(
+    repair_request: dict[str, Any],
+) -> dict[str, Any]:
+    failure_source = str(
+        repair_request.get(
+            "failure_source"
+        )
+        or FAILURE_SOURCE_VERIFICATION
+    ).strip().upper()
+
+    failure_payload = repair_request.get(
+        "failure_payload"
+    )
+
+    if not isinstance(
+        failure_payload,
+        dict,
+    ):
+        failure_payload = {}
+
+    failure_category = str(
+        repair_request.get(
+            "failure_category"
+        )
+        or failure_payload.get(
+            "failure_category"
+        )
+        or "UNKNOWN"
+    ).strip().upper()
+
+    return {
+        "failure_source": failure_source,
+        "failure_source_version": (
+            repair_request.get(
+                "failure_source_version"
+            )
+        ),
+        "failure_signature": (
+            repair_request.get(
+                "failure_signature"
+            )
+            or repair_request.get(
+                "verification_failure_signature"
+            )
+        ),
+        "failure_category": failure_category,
+        "failure_payload": failure_payload,
+    }
+
+
+def _patch_failure_result(
+    repair_request: dict[str, Any],
+) -> dict[str, Any] | None:
+    failure_context = _failure_source_context(
+        repair_request
+    )
+
+    if (
+        failure_context["failure_source"]
+        != FAILURE_SOURCE_IMPLEMENTATION_PATCH
+    ):
+        return None
+
+    failure_payload = failure_context[
+        "failure_payload"
+    ]
+
+    stage = str(
+        failure_payload.get("stage")
+        or "PATCH"
+    ).strip()
+
+    error_text = str(
+        failure_payload.get("error")
+        or failure_payload.get("message")
+        or ""
+    )
+
+    classification = failure_payload.get(
+        "failure_classification"
+    )
+
+    if not isinstance(classification, dict):
+        classification = {}
+
+    return {
+        "passed": False,
+        "name": stage,
+        "command": None,
+        "category": "PATCH",
+        "failure_category": (
+            failure_context[
+                "failure_category"
+            ]
+        ),
+        "returncode": None,
+        "timed_out": (
+            failure_context[
+                "failure_category"
+            ]
+            == "TIMEOUT"
+        ),
+        "stdout": "",
+        "stderr": error_text,
+        "suspected_files": (
+            failure_payload.get(
+                "suspected_files",
+                [],
+            )
+        ),
+        "failure_classification": (
+            classification
+        ),
+        "failed_at": failure_payload.get(
+            "failed_at"
+        ),
+        "failure_source": (
+            FAILURE_SOURCE_IMPLEMENTATION_PATCH
+        ),
+    }
+
+
 def _verification_context(
     repair_request: dict[str, Any],
 ) -> dict[str, Any]:
+    failure_context = _failure_source_context(
+        repair_request
+    )
+
+    patch_failure = _patch_failure_result(
+        repair_request
+    )
+
+    if patch_failure is not None:
+        return {
+            "passed": False,
+            "failure_category": (
+                failure_context[
+                    "failure_category"
+                ]
+            ),
+            "requested_command_count": None,
+            "executed_command_count": None,
+            "failed_results": [
+                patch_failure
+            ],
+            "failure_source": (
+                failure_context[
+                    "failure_source"
+                ]
+            ),
+        }
+
     verification = repair_request.get(
         "verification_result"
     )
@@ -457,6 +614,9 @@ def _verification_context(
             verification.get(
                 "failure_category"
             )
+            or failure_context[
+                "failure_category"
+            ]
         ),
         "requested_command_count": (
             verification.get(
@@ -469,6 +629,11 @@ def _verification_context(
             )
         ),
         "failed_results": failed_results,
+        "failure_source": (
+            failure_context[
+                "failure_source"
+            ]
+        ),
     }
 
 
@@ -760,6 +925,48 @@ def build_repair_context(
                 )
             ),
         },
+        "failure": (
+            _failure_source_context(
+                repair_request
+            )
+        ),
+        "failure_source": (
+            repair_request.get(
+                "failure_source"
+            )
+            or FAILURE_SOURCE_VERIFICATION
+        ),
+        "failure_source_version": (
+            repair_request.get(
+                "failure_source_version"
+            )
+        ),
+        "failure_signature": (
+            repair_request.get(
+                "failure_signature"
+            )
+            or repair_request.get(
+                "verification_failure_signature"
+            )
+        ),
+        "failure_category": (
+            repair_request.get(
+                "failure_category"
+            )
+            or "UNKNOWN"
+        ),
+        "failure_payload": (
+            repair_request.get(
+                "failure_payload"
+            )
+            if isinstance(
+                repair_request.get(
+                    "failure_payload"
+                ),
+                dict,
+            )
+            else {}
+        ),
         "verification": (
             _verification_context(
                 repair_request
@@ -915,6 +1122,16 @@ def build_repair_context(
                 REPAIR_CONTEXT_VERSION
             ),
             "context_id": context_id,
+            "failure_source": (
+                context_payload.get(
+                    "failure_source"
+                )
+            ),
+            "failure_category": (
+                context_payload.get(
+                    "failure_category"
+                )
+            ),
             "candidate_file_count": len(
                 deduplicated_paths
             ),

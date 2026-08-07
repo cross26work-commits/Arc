@@ -39,6 +39,7 @@ REPAIR_EDIT_SCHEMA_VERSION = (
 )
 
 ALLOWED_CONTEXT_STATUSES = {
+    "REQUESTED",
     "AWAITING_REPAIR_REQUEST",
     "REPAIR_FAILED",
 }
@@ -777,6 +778,118 @@ def _generate_trailing_whitespace_edit(
     }
 
 
+def _generate_expected_repair_edit(
+    *,
+    context: dict[str, Any],
+    sources: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    failure_payload = context.get(
+        "failure_payload"
+    )
+
+    if not isinstance(
+        failure_payload,
+        dict,
+    ):
+        return None
+
+    expected_repair = failure_payload.get(
+        "expected_repair"
+    )
+
+    if not isinstance(
+        expected_repair,
+        dict,
+    ):
+        return None
+
+    operation = expected_repair.get(
+        "operation"
+    )
+
+    if operation != "REPLACE_UNIQUE":
+        return None
+
+    path = _normalize_relative_path(
+        expected_repair.get("path")
+    )
+
+    if path is None:
+        return None
+
+    source = sources.get(path)
+
+    if not isinstance(source, dict):
+        return None
+
+    content = source.get("content")
+
+    if not isinstance(content, str):
+        return None
+
+    old_text = expected_repair.get(
+        "old_text"
+    )
+    new_text = expected_repair.get(
+        "new_text"
+    )
+
+    if not isinstance(old_text, str):
+        return None
+
+    if not isinstance(new_text, str):
+        return None
+
+    if not old_text:
+        return None
+
+    if old_text == new_text:
+        return None
+
+    # Windows?????????
+    normalized_content = content.replace(
+        "\r\n",
+        "\n",
+    )
+    normalized_old_text = old_text.replace(
+        "\r\n",
+        "\n",
+    )
+    normalized_new_text = new_text.replace(
+        "\r\n",
+        "\n",
+    )
+
+    if (
+        normalized_content.count(
+            normalized_old_text
+        )
+        != 1
+    ):
+        return None
+
+    edit = {
+        "operation": "REPLACE_UNIQUE",
+        "path": path,
+        "old_text": normalized_old_text,
+        "new_text": normalized_new_text,
+        "reason": (
+            "Generate a deterministic edit from the explicit expected_repair after confirming that old_text occurs exactly once."
+        ),
+        "confidence": 1.0,
+        "rule_id": (
+            "verification-expected-repair-v0.1"
+        ),
+    }
+
+    _validate_generated_edit(
+        edit,
+        normalized_content,
+    )
+
+    return edit
+
+
 def _generate_edit_for_failure(
     *,
     failure: dict[str, Any],
@@ -864,6 +977,18 @@ def generate_repair_edit(
 
     edits: list[dict[str, Any]] = []
     skipped_reasons: list[str] = []
+
+    expected_repair_edit = (
+        _generate_expected_repair_edit(
+            context=context,
+            sources=sources,
+        )
+    )
+
+    if expected_repair_edit is not None:
+        edits.append(
+            expected_repair_edit
+        )
 
     for index, failure in enumerate(
         failures,
