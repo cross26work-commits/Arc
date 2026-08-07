@@ -157,6 +157,27 @@ def _get_analysis_task(
         ).fetchone()
 
 
+
+def _get_planning_task(
+    mission_id: int,
+):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT
+                id,
+                status,
+                target_path,
+                result
+            FROM mission_tasks
+            WHERE mission_id = ?
+              AND task_type = 'PLANNING'
+            ORDER BY position ASC
+            LIMIT 1
+            """,
+            (mission_id,),
+        ).fetchone()
+
 def _normalize_relative_path(
     value: Any,
 ) -> str | None:
@@ -215,6 +236,69 @@ def _parse_analysis_result(
 
     return value
 
+
+def _parse_planning_result(
+    raw_result: Any,
+) -> dict[str, Any]:
+    if not isinstance(raw_result, str):
+        return {}
+
+    if not raw_result.strip():
+        return {}
+
+    try:
+        value = json.loads(raw_result)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(value, dict):
+        return {}
+
+    return value
+
+
+def _planning_file_operations(
+    planning: dict[str, Any],
+) -> dict[str, str]:
+    typed_plan = planning.get("typed_plan")
+
+    if not isinstance(typed_plan, dict):
+        return {}
+
+    selected_files = typed_plan.get(
+        "selected_files"
+    )
+
+    if not isinstance(selected_files, list):
+        return {}
+
+    operations: dict[str, str] = {}
+
+    for item in selected_files:
+        if not isinstance(item, dict):
+            continue
+
+        relative_path = _normalize_relative_path(
+            item.get("path")
+        )
+
+        if relative_path is None:
+            continue
+
+        operation = str(
+            item.get("operation")
+            or "UPDATE"
+        ).strip().upper()
+
+        if operation not in {
+            "CREATE",
+            "UPDATE",
+        }:
+            continue
+
+        operations[relative_path] = operation
+
+    return operations
 
 def _candidate_paths_from_analysis(
     analysis: dict[str, Any],
@@ -542,6 +626,32 @@ def build_code_context(
         )
     )
 
+    planning_task = _get_planning_task(
+        mission_id
+    )
+
+    planning: dict[str, Any] = {}
+    planning_operations: dict[str, str] = {}
+
+    if (
+        planning_task is not None
+        and planning_task["status"] == "COMPLETED"
+    ):
+        planning = _parse_planning_result(
+            planning_task["result"]
+        )
+        planning_operations = (
+            _planning_file_operations(
+                planning
+            )
+        )
+
+        for planned_path in planning_operations:
+            if planned_path not in candidate_paths:
+                candidate_paths.append(
+                    planned_path
+                )
+
     if not candidate_paths:
         target_path = _normalize_relative_path(
             analysis_task["target_path"]
@@ -552,7 +662,7 @@ def build_code_context(
 
     if not candidate_paths:
         raise CodeContextError(
-            "関連ファイル候補を取得できませんでした。"
+            "No related file candidates were found."
         )
 
     candidate_map = _analysis_candidate_map(
@@ -563,14 +673,37 @@ def build_code_context(
     included_total_bytes = 0
 
     for relative_path in candidate_paths:
-        source = _read_context_source(
-            project_path=mission["project_path"],
-            relative_path=relative_path,
-            remaining_bytes=(
-                MAX_TOTAL_BYTES
-                - included_total_bytes
-            ),
+        operation = planning_operations.get(
+            relative_path,
+            "UPDATE",
         )
+
+        if operation == "CREATE":
+            source = {
+                "relative_path": relative_path,
+                "exists": False,
+                "included": True,
+                "truncated": False,
+                "size_bytes": 0,
+                "included_bytes": 0,
+                "sha256": None,
+                "language": None,
+                "content": "",
+                "error": None,
+                "operation": "CREATE",
+                "virtual": True,
+            }
+        else:
+            source = _read_context_source(
+                project_path=mission["project_path"],
+                relative_path=relative_path,
+                remaining_bytes=(
+                    MAX_TOTAL_BYTES
+                    - included_total_bytes
+                ),
+            )
+            source["operation"] = operation
+            source["virtual"] = False
 
         included_total_bytes += int(
             source.get("included_bytes") or 0
