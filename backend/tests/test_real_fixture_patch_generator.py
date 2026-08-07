@@ -733,3 +733,735 @@ def test_real_fixture_create_patch_generation(
             backup_root,
             ignore_errors=True,
         )
+
+def test_real_fixture_create_patch_apply_succeeds(
+    tmp_path,
+):
+    from app.missions.implementation_runner import (
+        apply_mission_implementation_patch_safe,
+    )
+    from app.missions.models import (
+        MissionPatchApplyRequest,
+    )
+
+    target = (
+        FIXTURE_ROOT
+        / NEW_FILE_RELATIVE_PATH
+    )
+
+    if target.exists():
+        target.unlink()
+
+    state = _create_state()
+
+    project = {
+        "id": PROJECT_ID,
+        "name": "ArcRepairFixture",
+        "path": str(FIXTURE_ROOT),
+    }
+
+    backup_root = (
+        tmp_path
+        / "implementation_backups"
+    )
+
+    generate_payload = MissionPatchGenerateRequest(
+        edits=[
+            MissionPatchEdit(
+                operation="APPEND",
+                path=NEW_FILE_RELATIVE_PATH,
+                text=NEW_FILE_CONTENT,
+            )
+        ],
+        generated_by="create-apply-e2e",
+        note="Test CREATE patch apply.",
+    )
+
+    def get_mission(_mission_id):
+        assert _mission_id == MISSION_ID
+        return _mission_snapshot(state)
+
+    def get_project(_project_id):
+        assert _project_id == PROJECT_ID
+        return dict(project)
+
+    def get_connection():
+        return _FakeConnection(state)
+
+    try:
+        with (
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "IMPLEMENTATION_BACKUP_ROOT",
+                backup_root,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_connection",
+                side_effect=get_connection,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "add_mission_log",
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "update_mission_task",
+                return_value=_mission_snapshot(state),
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "add_mission_log",
+            ),
+        ):
+            create_mission_implementation_backup_safe(
+                MISSION_ID
+            )
+
+            generated = generate_mission_patch_safe(
+                mission_id=MISSION_ID,
+                payload=generate_payload,
+            )
+
+            patch_check = generated["patch_check"]
+
+            patch_sha256 = (
+                patch_check.get("sha256")
+                or patch_check.get("patch_sha256")
+            )
+
+            assert isinstance(
+                patch_sha256,
+                str,
+            )
+            assert len(patch_sha256) == 64
+
+            applied = (
+                apply_mission_implementation_patch_safe(
+                    mission_id=MISSION_ID,
+                    payload=MissionPatchApplyRequest(
+                        confirmation="APPLY_PATCH",
+                        expected_patch_sha256=(
+                            patch_sha256
+                        ),
+                    ),
+                )
+            )
+
+        assert target.exists()
+        assert target.is_file()
+
+        actual_content = (
+            target.read_text(
+                encoding="utf-8"
+            )
+            .replace("\r\n", "\n")
+        )
+
+        assert actual_content == (
+            NEW_FILE_CONTENT.replace(
+                "\r\n",
+                "\n",
+            )
+        )
+
+        patch_apply = applied["patch_apply"]
+
+        assert patch_apply["applied"] is True
+        assert patch_apply["rolled_back"] is False
+
+        assert patch_apply["changed_files"] == [
+            NEW_FILE_RELATIVE_PATH,
+        ]
+
+        assert (
+            patch_apply["changed_file_count"]
+            == 1
+        )
+
+        after_files = patch_apply["after_files"]
+
+        assert len(after_files) == 1
+
+        assert after_files[0]["path"] == (
+            NEW_FILE_RELATIVE_PATH
+        )
+
+        assert after_files[0][
+            "before_sha256"
+        ] is None
+
+        assert isinstance(
+            after_files[0]["after_sha256"],
+            str,
+        )
+
+    finally:
+        if target.exists():
+            target.unlink()
+
+def test_real_fixture_create_patch_rollback_removes_created_file(
+    tmp_path,
+):
+    from app.missions.implementation_runner import (
+        MissionImplementationError,
+        _apply_patch_transactional,
+        _git_changed_paths,
+    )
+
+    target = (
+        FIXTURE_ROOT
+        / NEW_FILE_RELATIVE_PATH
+    )
+
+    if target.exists():
+        target.unlink()
+
+    initial_changes = {
+        str(value).strip()
+        .replace("\\", "/")
+        .lstrip("/")
+        for value in _git_changed_paths(
+            FIXTURE_ROOT
+        )
+        if str(value).strip()
+    }
+
+    state = _create_state()
+
+    project = {
+        "id": PROJECT_ID,
+        "name": "ArcRepairFixture",
+        "path": str(FIXTURE_ROOT),
+    }
+
+    backup_root = (
+        tmp_path
+        / "implementation_backups"
+    )
+
+    payload = MissionPatchGenerateRequest(
+        edits=[
+            MissionPatchEdit(
+                operation="APPEND",
+                path=NEW_FILE_RELATIVE_PATH,
+                text=NEW_FILE_CONTENT,
+            )
+        ],
+        generated_by="create-rollback-e2e",
+        note="Test CREATE rollback.",
+    )
+
+    def get_mission(_mission_id):
+        assert _mission_id == MISSION_ID
+        return _mission_snapshot(state)
+
+    def get_project(_project_id):
+        assert _project_id == PROJECT_ID
+        return dict(project)
+
+    def get_connection():
+        return _FakeConnection(state)
+
+    failure = None
+
+    try:
+        with (
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "IMPLEMENTATION_BACKUP_ROOT",
+                backup_root,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_connection",
+                side_effect=get_connection,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "add_mission_log",
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "add_mission_log",
+            ),
+        ):
+            backup = (
+                create_mission_implementation_backup_safe(
+                    MISSION_ID
+                )
+            )
+
+            generated = (
+                generate_mission_patch_safe(
+                    mission_id=MISSION_ID,
+                    payload=payload,
+                )
+            )
+
+            backup_result = backup[
+                "implementation"
+            ]
+
+            manifest_path = Path(
+                backup_result[
+                    "backup"
+                ][
+                    "manifest_path"
+                ]
+            )
+
+            manifest = json.loads(
+                manifest_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            run_root = manifest_path.parent
+
+            patch_path = (
+                run_root
+                / "proposed.patch"
+            )
+
+            assert patch_path.exists()
+
+            patch_check = generated[
+                "patch_check"
+            ]
+
+            patch_sha256 = (
+                patch_check.get("sha256")
+                or patch_check.get(
+                    "patch_sha256"
+                )
+            )
+
+            assert isinstance(
+                patch_sha256,
+                str,
+            )
+
+            changed_files = generated[
+                "generator"
+            ][
+                "changed_files"
+            ]
+
+            try:
+                _apply_patch_transactional(
+                    project_root=FIXTURE_ROOT,
+                    run_root=run_root,
+                    manifest=manifest,
+                    patch_path=patch_path,
+                    expected_patch_sha256=(
+                        patch_sha256
+                    ),
+                    expected_changed_paths=(
+                        changed_files
+                    ),
+                    allowed_existing_paths=(
+                        initial_changes
+                    ),
+                    simulate_failure_after_apply=True,
+                )
+            except MissionImplementationError as error:
+                failure = error
+            else:
+                raise AssertionError(
+                    "Simulated failure did not occur."
+                )
+
+        assert failure is not None
+
+        # CREATE????????Rollback????
+        assert not target.exists()
+
+        after_changes = {
+            str(value).strip()
+            .replace("\\", "/")
+            .lstrip("/")
+            for value in _git_changed_paths(
+                FIXTURE_ROOT
+            )
+            if str(value).strip()
+        }
+
+        # Rollback??Git???????
+        assert after_changes == initial_changes
+
+    finally:
+        if target.exists():
+            target.unlink()
+
+def test_real_fixture_create_apply_then_verification_passes(
+    tmp_path,
+):
+    from app.missions.implementation_runner import (
+        apply_mission_implementation_patch_safe,
+    )
+    from app.missions.models import (
+        MissionPatchApplyRequest,
+    )
+    from app.missions.verification_runner import (
+        run_mission_verification_safe,
+    )
+
+    target = (
+        FIXTURE_ROOT
+        / NEW_FILE_RELATIVE_PATH
+    )
+
+    if target.exists():
+        target.unlink()
+
+    state = _create_state()
+
+    implementation_task_id = next(
+        task_id
+        for task_id, task in state["tasks"].items()
+        if task["task_type"] == "IMPLEMENTATION"
+    )
+
+    verification_task_id = next(
+        task_id
+        for task_id, task in state["tasks"].items()
+        if task["task_type"] == "VERIFICATION"
+    )
+
+    implementation_result = json.loads(
+        state["tasks"][
+            implementation_task_id
+        ]["result"]
+    )
+
+    implementation_result[
+        "verification_commands"
+    ] = [
+        {
+            "name": "pytest",
+            "command": "git diff --check",
+        }
+    ]
+
+    state["tasks"][
+        implementation_task_id
+    ]["result"] = json.dumps(
+        implementation_result,
+        ensure_ascii=False,
+    )
+
+    state["tasks"][
+        verification_task_id
+    ]["status"] = "PENDING"
+
+    project = {
+        "id": PROJECT_ID,
+        "name": "ArcRepairFixture",
+        "path": str(FIXTURE_ROOT),
+    }
+
+    backup_root = (
+        tmp_path
+        / "implementation_backups"
+    )
+
+    generate_payload = MissionPatchGenerateRequest(
+        edits=[
+            MissionPatchEdit(
+                operation="APPEND",
+                path=NEW_FILE_RELATIVE_PATH,
+                text=NEW_FILE_CONTENT,
+            )
+        ],
+        generated_by="create-verification-e2e",
+        note=(
+            "Test CREATE apply then formal "
+            "Mission Verification."
+        ),
+    )
+
+    def get_mission(_mission_id):
+        assert _mission_id == MISSION_ID
+        return _mission_snapshot(state)
+
+    def get_project(_project_id):
+        assert _project_id == PROJECT_ID
+        return dict(project)
+
+    def get_connection():
+        return _FakeConnection(state)
+
+    def update_task(
+        *,
+        mission_id,
+        task_id,
+        payload,
+    ):
+        assert mission_id == MISSION_ID
+        assert task_id in state["tasks"]
+
+        task = state["tasks"][task_id]
+
+        status = getattr(
+            payload,
+            "status",
+            None,
+        )
+
+        result = getattr(
+            payload,
+            "result",
+            None,
+        )
+
+        target_path = getattr(
+            payload,
+            "target_path",
+            None,
+        )
+
+        if status is not None:
+            task["status"] = status
+
+        if result is not None:
+            task["result"] = result
+
+        if target_path is not None:
+            task["target_path"] = (
+                target_path
+            )
+
+        return _mission_snapshot(state)
+
+    try:
+        with (
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "IMPLEMENTATION_BACKUP_ROOT",
+                backup_root,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_connection",
+                side_effect=get_connection,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "update_mission_task",
+                side_effect=update_task,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "add_mission_log",
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "add_mission_log",
+            ),
+            patch(
+                "app.missions."
+                "verification_runner."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "verification_runner."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "verification_runner."
+                "update_mission_task",
+                side_effect=update_task,
+            ),
+            patch(
+                "app.missions."
+                "verification_runner."
+                "add_mission_log",
+            ),
+        ):
+            create_mission_implementation_backup_safe(
+                MISSION_ID
+            )
+
+            generated = (
+                generate_mission_patch_safe(
+                    mission_id=MISSION_ID,
+                    payload=generate_payload,
+                )
+            )
+
+            patch_check = generated[
+                "patch_check"
+            ]
+
+            patch_sha256 = (
+                patch_check.get("sha256")
+                or patch_check.get(
+                    "patch_sha256"
+                )
+            )
+
+            assert isinstance(
+                patch_sha256,
+                str,
+            )
+
+            applied = (
+                apply_mission_implementation_patch_safe(
+                    mission_id=MISSION_ID,
+                    payload=MissionPatchApplyRequest(
+                        confirmation=(
+                            "APPLY_PATCH"
+                        ),
+                        expected_patch_sha256=(
+                            patch_sha256
+                        ),
+                    ),
+                )
+            )
+
+            assert applied[
+                "implementation"
+            ]["mode"] == "PATCH_APPLIED"
+
+            assert target.exists()
+
+            verified = (
+                run_mission_verification_safe(
+                    MISSION_ID
+                )
+            )
+
+        verification = verified[
+            "verification"
+        ]
+
+        assert verification["passed"] is True
+
+        assert verification[
+            "requested_command_count"
+        ] >= 1
+
+        assert verification[
+            "executed_command_count"
+        ] >= 1
+
+        assert all(
+            result["passed"]
+            for result in verification["results"]
+        )
+
+        # Verification????CREATE???????
+        assert target.exists()
+
+        actual_content = (
+            target.read_text(
+                encoding="utf-8"
+            )
+            .replace("\r\n", "\n")
+        )
+
+        assert actual_content == (
+            NEW_FILE_CONTENT.replace(
+                "\r\n",
+                "\n",
+            )
+        )
+
+        assert state["tasks"][
+            verification_task_id
+        ]["status"] == "COMPLETED"
+
+    finally:
+        if target.exists():
+            target.unlink()
