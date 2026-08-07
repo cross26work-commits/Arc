@@ -283,8 +283,10 @@ def generate_unified_patch(
     project_root: Path,
     allowed_paths: set[str],
     edits: list[MissionPatchEdit],
+    file_operations: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
+    file_operations = file_operations or {}
 
     if not edits:
         raise MissionPatchGeneratorError(
@@ -294,10 +296,16 @@ def generate_unified_patch(
     grouped: dict[str, list[MissionPatchEdit]] = {}
 
     for edit in edits:
-        relative_path = _normalize_relative_path(
-            project_root=project_root,
-            raw_path=edit.path,
-        )
+        normalized = edit.path.strip().lstrip("/")
+
+        if not normalized:
+            raise MissionPatchGeneratorError(
+                "編集対象Pathが空です。"
+            )
+
+        relative_path = Path(normalized).as_posix()
+
+
 
         if relative_path not in allowed_paths:
             raise MissionPatchGeneratorError(
@@ -319,11 +327,38 @@ def generate_unified_patch(
             / relative_path
         ).resolve()
 
-        original_bytes = target.read_bytes()
-        original = original_bytes.decode(
-            "utf-8",
-            errors="strict",
+
+        file_operation = (
+            file_operations.get(
+                relative_path,
+                "UPDATE",
+            )
+            .strip()
+            .upper()
         )
+
+        if file_operation == "CREATE":
+            if target.exists():
+                raise MissionPatchGeneratorError(
+                    "CREATE target already exists: "
+                    f"{relative_path}"
+                )
+
+            original_bytes = b""
+            original = ""
+
+        else:
+            if not target.exists():
+                raise MissionPatchGeneratorError(
+                    "UPDATE target does not exist: "
+                    f"{relative_path}"
+                )
+
+            original_bytes = target.read_bytes()
+            original = original_bytes.decode(
+                "utf-8",
+                errors="strict",
+            )
 
         modified = original
 
@@ -339,18 +374,30 @@ def generate_unified_patch(
                 f"{relative_path}"
             )
 
-        diff_body = "".join(
-            difflib.unified_diff(
-                original.splitlines(
-                    keepends=True
-                ),
-                modified.splitlines(
-                    keepends=True
-                ),
-                fromfile=f"a/{relative_path}",
-                tofile=f"b/{relative_path}",
+        if file_operation == "CREATE":
+            diff_body = "new file mode 100644\n" + "".join(
+                difflib.unified_diff(
+                    [],
+                    modified.splitlines(
+                        keepends=True
+                    ),
+                    fromfile="/dev/null",
+                    tofile=f"b/{relative_path}",
+                )
             )
-        )
+        else:
+            diff_body = "".join(
+                difflib.unified_diff(
+                    original.splitlines(
+                        keepends=True
+                    ),
+                    modified.splitlines(
+                        keepends=True
+                    ),
+                    fromfile=f"a/{relative_path}",
+                    tofile=f"b/{relative_path}",
+                )
+            )
 
         if not diff_body:
             raise MissionPatchGeneratorError(
@@ -514,10 +561,22 @@ def generate_mission_patch(
         and isinstance(item.get("path"), str)
     }
 
+    file_operations = {
+        item["path"]: (
+            item.get("operation", "UPDATE")
+            if isinstance(item.get("operation"), str)
+            else "UPDATE"
+        )
+        for item in manifest.get("files", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+    }
+
     generated = generate_unified_patch(
         project_root=project_root,
         allowed_paths=allowed_paths,
         edits=payload.edits,
+        file_operations=file_operations,
     )
 
     generator_result = {

@@ -1761,6 +1761,7 @@ def _validate_patch_text(
     patch_text: str,
     project_root: Path,
     allowed_paths: set[str],
+    file_operations: dict[str, str],
 ) -> list[str]:
     normalized_patch = patch_text.replace(
         "\r\n",
@@ -1773,7 +1774,6 @@ def _validate_patch_text(
     forbidden_markers = {
         "GIT binary patch",
         "Binary files ",
-        "new file mode ",
         "deleted file mode ",
         "rename from ",
         "rename to ",
@@ -1820,10 +1820,64 @@ def _validate_patch_text(
                 f"変更できません: {relative_path}"
             )
 
-        if not target.exists() or not target.is_file():
+        file_operation = (
+            file_operations.get(relative_path, "UPDATE")
+            .strip()
+            .upper()
+        )
+
+        expected_create_header = (
+            f"diff --git a/{relative_path} b/{relative_path}\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            f"+++ b/{relative_path}\n"
+        )
+
+        new_file_mode_header = (
+            f"diff --git a/{relative_path} b/{relative_path}\n"
+            "new file mode "
+        )
+
+        has_expected_create_header = (
+            expected_create_header
+            in normalized_patch
+        )
+
+        has_new_file_mode = (
+            new_file_mode_header
+            in normalized_patch
+        )
+
+        if file_operation == "CREATE":
+            if not has_expected_create_header:
+                raise MissionImplementationError(
+                    "CREATE patch header is invalid: "
+                    f"{relative_path}"
+                )
+
+            if target.exists():
+                raise MissionImplementationError(
+                    "CREATE target already exists: "
+                    f"{relative_path}"
+                )
+
+        elif file_operation == "UPDATE":
+            if has_new_file_mode:
+                raise MissionImplementationError(
+                    "UPDATE patch cannot use new file mode: "
+                    f"{relative_path}"
+                )
+
+            if not target.exists() or not target.is_file():
+                raise MissionImplementationError(
+                    "UPDATE target does not exist or is not a file: "
+                    f"{relative_path}"
+                )
+
+        else:
             raise MissionImplementationError(
-                "Patch対象ファイルが存在しません: "
-                f"{relative_path}"
+                "Unsupported manifest file operation: "
+                f"{file_operation}: {relative_path}"
             )
 
     return patch_paths
@@ -2183,6 +2237,15 @@ def check_mission_implementation_patch(
         for item in manifest["files"]
     }
 
+    file_operations = {
+        item["path"]: (
+            str(item.get("operation") or "UPDATE")
+            .strip()
+            .upper()
+        )
+        for item in manifest["files"]
+    }
+
     patch_text = payload.patch_text.replace(
         "\r\n",
         "\n",
@@ -2195,6 +2258,7 @@ def check_mission_implementation_patch(
         patch_text=patch_text,
         project_root=project_root,
         allowed_paths=allowed_paths,
+        file_operations=file_operations,
     )
 
     patch_path = (

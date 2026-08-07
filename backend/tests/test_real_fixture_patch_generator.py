@@ -27,6 +27,13 @@ FIXTURE_ROOT = Path(
 
 TARGET_RELATIVE_PATH = "src/calculator.py"
 
+NEW_FILE_RELATIVE_PATH = "src/new_module.py"
+
+NEW_FILE_CONTENT = (
+    "def hello() -> str:\n"
+    '    return "hello"\n'
+)
+
 BROKEN_BLOCK = (
     "def multiply(left: int, right: int) -> int:\n"
     '    """Return the product of two integers."""\n'
@@ -155,6 +162,34 @@ def _state() -> dict:
     }
 
 
+
+def _create_implementation_result() -> dict:
+    result = _initial_implementation_result()
+
+    result["selected_file_count"] = 1
+    result["selected_files"] = [
+        {
+            "path": NEW_FILE_RELATIVE_PATH,
+            "reason": "Create new module",
+            "operation": "CREATE",
+        }
+    ]
+
+    return result
+
+
+def _create_state() -> dict:
+    state = _state()
+
+    state["tasks"][363]["result"] = json.dumps(
+        _create_implementation_result()
+    )
+
+    state["tasks"][363]["target_path"] = (
+        NEW_FILE_RELATIVE_PATH
+    )
+
+    return state
 def _mission_snapshot(state: dict) -> dict:
     mission = dict(state["mission"])
     mission["tasks"] = [
@@ -534,3 +569,167 @@ def test_real_fixture_backup_and_patch_check(
 
     assert BROKEN_BLOCK in restored
     assert _git("status", "--short") == ""
+
+def test_real_fixture_create_patch_generation(
+    tmp_path,
+):
+    target = (
+        FIXTURE_ROOT
+        / NEW_FILE_RELATIVE_PATH
+    )
+
+    if target.exists():
+        target.unlink()
+
+    state = _create_state()
+
+    project = {
+        "id": PROJECT_ID,
+        "name": "ArcRepairFixture",
+        "path": str(FIXTURE_ROOT),
+    }
+
+    backup_root = (
+        tmp_path
+        / "implementation_backups"
+    )
+
+    payload = MissionPatchGenerateRequest(
+        edits=[
+            MissionPatchEdit(
+                operation="APPEND",
+                path=NEW_FILE_RELATIVE_PATH,
+                text=NEW_FILE_CONTENT,
+            )
+        ],
+        generated_by="create-repair-e2e",
+        note="Test CREATE patch generation.",
+    )
+
+    def get_mission(_mission_id):
+        assert _mission_id == MISSION_ID
+        return _mission_snapshot(state)
+
+    def get_project(_project_id):
+        assert _project_id == PROJECT_ID
+        return dict(project)
+
+    def get_connection():
+        return _FakeConnection(state)
+
+    try:
+        with (
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "IMPLEMENTATION_BACKUP_ROOT",
+                backup_root,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "get_connection",
+                side_effect=get_connection,
+            ),
+            patch(
+                "app.missions."
+                "implementation_runner."
+                "add_mission_log",
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "get_mission",
+                side_effect=get_mission,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "_get_project",
+                side_effect=get_project,
+            ),
+            patch(
+                "app.missions."
+                "patch_generator."
+                "add_mission_log",
+            ),
+        ):
+            backup = (
+                create_mission_implementation_backup_safe(
+                    MISSION_ID
+                )
+            )
+
+            backup_result = backup[
+                "implementation"
+            ]
+
+            manifest_path = Path(
+                backup_result["backup"]["manifest_path"]
+            )
+
+            manifest = json.loads(
+                manifest_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            assert manifest["files"][0]["operation"] == (
+                "CREATE"
+            )
+
+            generated = (
+                generate_mission_patch_safe(
+                    mission_id=MISSION_ID,
+                    payload=payload,
+                )
+            )
+
+        generator = generated["generator"]
+        patch_check = generated["patch_check"]
+
+        assert generator["changed_files"] == [
+            NEW_FILE_RELATIVE_PATH,
+        ]
+
+        assert "--- /dev/null" in (
+            generator["patch_text"]
+        )
+
+        assert "+def hello() -> str:" in (
+            generator["patch_text"]
+        )
+        assert '+    return "hello"' in (
+            generator["patch_text"]
+        )
+
+        assert patch_check[
+            "git_apply_check"
+        ]
+
+        assert patch_check[
+            "applied"
+        ] is False
+
+        assert not target.exists()
+
+    finally:
+        if target.exists():
+            target.unlink()
+
+        shutil.rmtree(
+            backup_root,
+            ignore_errors=True,
+        )
