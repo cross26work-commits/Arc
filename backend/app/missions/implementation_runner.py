@@ -1157,6 +1157,10 @@ def create_mission_implementation_backup(
     try:
         for item in validated_files:
             relative_path = item["path"]
+            operation = str(
+                item.get("operation")
+                or "UPDATE"
+            ).strip().upper()
 
             source = (
                 project_root
@@ -1168,8 +1172,22 @@ def create_mission_implementation_backup(
                 source,
             ):
                 raise MissionImplementationError(
-                    "Project外ファイルはBackupできません。"
+                    "Project outside file cannot be backed up."
                 )
+
+            if operation == "CREATE":
+                manifest_files.append(
+                    {
+                        "path": relative_path,
+                        "operation": "CREATE",
+                        "existed_before": False,
+                        "sha256": None,
+                        "size_bytes": 0,
+                        "backup_path": None,
+                        "verified": True,
+                    }
+                )
+                continue
 
             data = source.read_bytes()
 
@@ -1194,13 +1212,15 @@ def create_mission_implementation_backup(
 
             if source_hash != backup_hash:
                 raise MissionImplementationError(
-                    "BackupファイルのHash検証に"
-                    f"失敗しました: {relative_path}"
+                    "Backup hash verification failed: "
+                    f"{relative_path}"
                 )
 
             manifest_files.append(
                 {
                     "path": relative_path,
+                    "operation": operation,
+                    "existed_before": True,
                     "sha256": source_hash,
                     "size_bytes": len(data),
                     "backup_path": (
