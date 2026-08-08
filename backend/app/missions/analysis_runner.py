@@ -143,6 +143,42 @@ COMPREHENSIVE_CANDIDATE_LIMIT = 36
 FOCUSED_SEARCH_RESULT_LIMIT = 25
 COMPREHENSIVE_SEARCH_RESULT_LIMIT = 100
 
+FOCUSED_STOP_WORDS = frozenset(
+    {
+        "the",
+        "and",
+        "actual",
+        "before",
+        "resolve",
+        "issue",
+        "inspect",
+        "changing",
+        "currently",
+        "exposes",
+        "while",
+        "uses",
+    }
+)
+
+FOCUSED_SEARCH_ALIASES = {
+    "authentication": (
+        "auth",
+        "login",
+        "register",
+        "logout",
+        "session",
+        "supabase",
+    ),
+    "auth": (
+        "auth",
+        "login",
+        "register",
+        "logout",
+        "session",
+        "supabase",
+    ),
+}
+
 
 def _is_comprehensive_analysis(
     objective: str,
@@ -273,8 +309,32 @@ def _tokenize_objective(objective: str) -> list[str]:
             :COMPREHENSIVE_SEARCH_TERM_LIMIT
         ]
 
+    focused_tokens = [
+        token
+        for token in normalized_tokens
+        if token not in FOCUSED_STOP_WORDS
+    ]
+
+    priority_tokens: list[str] = []
+
+    for token in focused_tokens:
+        priority_tokens.extend(
+            FOCUSED_SEARCH_ALIASES.get(
+                token,
+                (),
+            )
+        )
+
+        if "/" in token or "_" in token:
+            priority_tokens.append(token)
+
     return list(
-        dict.fromkeys(normalized_tokens)
+        dict.fromkeys(
+            [
+                *priority_tokens,
+                *focused_tokens,
+            ]
+        )
     )[:16]
 
 

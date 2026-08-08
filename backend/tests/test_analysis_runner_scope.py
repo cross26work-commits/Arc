@@ -641,3 +641,56 @@ def test_analyze_candidates_does_not_flag_normal_routes(
         == "STUB_ROUTE_HANDLER"
         for warning in analyzed[0]["warnings"]
     )
+
+
+
+def test_focused_analysis_prioritizes_explicit_auth_targets() -> None:
+    objective = (
+        "Resolve the production-readiness issue in authentication. "
+        "Inspect the actual frontend and backend flow before changing code. "
+        "The backend file backend/app/api/auth.py currently exposes "
+        "login_stub, register_stub, and logout_stub, while the frontend "
+        "uses Supabase authentication."
+    )
+
+    tokens = analysis_runner._tokenize_objective(
+        objective
+    )
+
+    focused = tokens[
+        :analysis_runner.FOCUSED_SEARCH_TERM_LIMIT
+    ]
+
+    assert "auth" in focused
+    assert "login_stub" in focused
+    assert "register_stub" in focused
+    assert "logout_stub" in focused
+    assert "supabase" in focused
+
+    assert any(
+        token.startswith("backend/app/api/auth")
+        for token in focused
+    )
+
+
+def test_focused_analysis_does_not_spend_budget_on_common_words() -> None:
+    objective = (
+        "Resolve the production-readiness issue in authentication. "
+        "Inspect the actual frontend and backend flow before changing code."
+    )
+
+    tokens = analysis_runner._tokenize_objective(
+        objective
+    )
+
+    focused = tokens[
+        :analysis_runner.FOCUSED_SEARCH_TERM_LIMIT
+    ]
+
+    for word in (
+        "the",
+        "and",
+        "actual",
+        "before",
+    ):
+        assert word not in focused
