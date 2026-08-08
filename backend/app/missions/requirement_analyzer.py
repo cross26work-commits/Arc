@@ -179,6 +179,55 @@ def _deduplicate(
     return result
 
 
+def _scope_keyword_is_negated(
+    text: str,
+    keyword: str,
+) -> bool:
+    start = 0
+    found = False
+
+    while True:
+        index = text.find(
+            keyword,
+            start,
+        )
+
+        if index < 0:
+            break
+
+        found = True
+
+        clause_start = max(
+            text.rfind(".", 0, index),
+            text.rfind(";", 0, index),
+            text.rfind("\n", 0, index),
+        )
+
+        prefix = text[
+            clause_start + 1:index
+        ]
+
+        negation_markers = (
+            "do not",
+            "don't",
+            "without",
+            "must not",
+            "should not",
+            "no ",
+            "not ",
+        )
+
+        if not any(
+            marker in prefix
+            for marker in negation_markers
+        ):
+            return False
+
+        start = index + len(keyword)
+
+    return found
+
+
 def _extract_in_scope(
     objective: str,
 ) -> list[str]:
@@ -187,7 +236,13 @@ def _extract_in_scope(
     scopes = [
         label
         for keyword, label in _SCOPE_HINTS.items()
-        if keyword in lowered
+        if (
+            keyword in lowered
+            and not _scope_keyword_is_negated(
+                lowered,
+                keyword,
+            )
+        )
     ]
 
     if not scopes:

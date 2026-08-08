@@ -140,3 +140,34 @@ def test_contract_is_json_serializable() -> None:
         dumped["risks"],
         list,
     )
+
+
+
+def test_analyze_requirement_excludes_negated_database_scope() -> None:
+    result = analyze_requirement(
+        objective=(
+            "Resolve the authentication issue without changing "
+            "the database. Do not make database changes or "
+            "schema changes."
+        ),
+    )
+
+    assert "Database" not in result.in_scope
+    assert not any(
+        "Database" in requirement
+        for requirement in result.requirements
+    )
+
+
+def test_analyze_requirement_keeps_positive_database_scope() -> None:
+    result = analyze_requirement(
+        objective=(
+            "Update the database schema for customer records."
+        ),
+    )
+
+    assert "Database" in result.in_scope
+    assert any(
+        "Database" in requirement
+        for requirement in result.requirements
+    )
