@@ -554,6 +554,8 @@ def _build_workstreams(
 
 def _build_verification_commands(
     files: list[dict[str, Any]],
+    *,
+    requirement: RequirementAnalyzerResult | None = None,
 ) -> list[dict[str, str]]:
     categories = {
         item["category"]
@@ -589,7 +591,31 @@ def _build_verification_commands(
             }
         )
 
-    if "TEST" in categories:
+    requirement_text = ""
+
+    if requirement is not None:
+        requirement_text = " ".join(
+            [
+                *requirement.requirements,
+                *requirement.success_criteria,
+            ]
+        ).lower()
+
+    tests_required = (
+        "TEST" in categories
+        or any(
+            marker in requirement_text
+            for marker in (
+                "test",
+                "pytest",
+                "regression",
+                "???",
+                "??",
+            )
+        )
+    )
+
+    if tests_required:
         commands.append(
             {
                 "name": "自動テスト",
@@ -1561,17 +1587,18 @@ def _run_mission_planner_impl(
     workstreams = _build_workstreams(
         selected_files
     )
+    requirement = _load_requirement_contract(
+        requirements_task
+    )
+
     verification = _build_verification_commands(
-        selected_files
+        selected_files,
+        requirement=requirement,
     )
     risk = _calculate_plan_risk(selected_files)
     effort = _estimate_effort(
         selected_files,
         workstreams,
-    )
-
-    requirement = _load_requirement_contract(
-        requirements_task
     )
 
     requirement_payload = requirement.model_dump(
