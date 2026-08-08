@@ -102,6 +102,56 @@ class MissionAnalysisError(Exception):
     """Mission調査処理に失敗した場合の例外。"""
 
 
+
+COMPREHENSIVE_ANALYSIS_MARKERS = (
+    "\u7dcf\u5408\u5206\u6790",
+    "\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u5168\u4f53",
+    "\u5168\u4f53\u3092\u5206\u6790",
+    "\u5168\u4f53\u3092\u8abf\u67fb",
+    "\u73fe\u5728\u306e\u5b9f\u88c5\u72b6\u614b",
+)
+
+COMPREHENSIVE_SEARCH_TERMS = (
+    "backend",
+    "frontend",
+    "api",
+    "auth",
+    "gmail",
+    "database",
+    "supabase",
+    "dashboard",
+    "service",
+    "revenue",
+    "results",
+    "test",
+    "security",
+    "error",
+    "health",
+    "main",
+    "customer",
+    "lead",
+    "settings",
+    "config",
+)
+
+FOCUSED_SEARCH_TERM_LIMIT = 12
+COMPREHENSIVE_SEARCH_TERM_LIMIT = 24
+
+FOCUSED_CANDIDATE_LIMIT = 12
+COMPREHENSIVE_CANDIDATE_LIMIT = 36
+
+
+def _is_comprehensive_analysis(
+    objective: str,
+) -> bool:
+    lowered = objective.lower()
+
+    return any(
+        marker.lower() in lowered
+        for marker in COMPREHENSIVE_ANALYSIS_MARKERS
+    )
+
+
 def _get_project(project_id: int):
     with get_connection() as connection:
         return connection.execute(
@@ -182,6 +232,11 @@ def _tokenize_objective(objective: str) -> list[str]:
         if keyword.lower() in lowered:
             tokens.extend(hints)
 
+    if _is_comprehensive_analysis(objective):
+        tokens.extend(
+            COMPREHENSIVE_SEARCH_TERMS
+        )
+
     normalized_tokens: list[str] = []
 
     for token in tokens:
@@ -201,7 +256,23 @@ def _tokenize_objective(objective: str) -> list[str]:
 
         normalized_tokens.append(normalized)
 
-    return list(dict.fromkeys(normalized_tokens))[:16]
+    if _is_comprehensive_analysis(objective):
+        prioritized_tokens = list(
+            dict.fromkeys(
+                [
+                    *COMPREHENSIVE_SEARCH_TERMS,
+                    *normalized_tokens,
+                ]
+            )
+        )
+
+        return prioritized_tokens[
+            :COMPREHENSIVE_SEARCH_TERM_LIMIT
+        ]
+
+    return list(
+        dict.fromkeys(normalized_tokens)
+    )[:16]
 
 
 def _search_index(
@@ -539,6 +610,12 @@ def _run_mission_analysis_impl(
             if task["task_type"] == "ANALYSIS"
         )
 
+    comprehensive_analysis = (
+        _is_comprehensive_analysis(
+            mission["objective"]
+        )
+    )
+
     search_terms = _tokenize_objective(
         mission["objective"]
     )
@@ -551,7 +628,15 @@ def _run_mission_analysis_impl(
             "results",
         ]
 
-    search_terms = search_terms[:12]
+    search_term_limit = (
+        COMPREHENSIVE_SEARCH_TERM_LIMIT
+        if comprehensive_analysis
+        else FOCUSED_SEARCH_TERM_LIMIT
+    )
+
+    search_terms = search_terms[
+        :search_term_limit
+    ]
 
     search_results: list[dict[str, Any]] = []
 
@@ -575,9 +660,15 @@ def _run_mission_analysis_impl(
                 }
             )
 
+    candidate_limit = (
+        COMPREHENSIVE_CANDIDATE_LIMIT
+        if comprehensive_analysis
+        else FOCUSED_CANDIDATE_LIMIT
+    )
+
     candidates = _rank_candidate_files(
         search_results,
-        max_candidates=12,
+        max_candidates=candidate_limit,
     )
 
     if not candidates:
