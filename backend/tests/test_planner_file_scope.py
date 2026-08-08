@@ -109,3 +109,105 @@ def test_explicit_scope_filters_unrelated_files() -> None:
         "BACKEND",
         "TEST",
     }
+
+
+
+def test_select_files_prioritizes_semantic_warning_candidate() -> None:
+    candidates = []
+
+    for index in range(10):
+        candidates.append(
+            {
+                "path": f"backend/app/services/high_{index}.py",
+                "role": "service",
+                "language": "python",
+                "score": 100 - index,
+                "reasons": ["search-match"],
+                "warnings": [],
+                "dependency": {
+                    "risk": {
+                        "level": "low",
+                        "score": 10,
+                    },
+                },
+            }
+        )
+
+    candidates.append(
+        {
+            "path": "backend/app/api/auth.py",
+            "role": "auth API routes",
+            "language": "python",
+            "score": 1,
+            "reasons": ["search-match"],
+            "warnings": [
+                {
+                    "level": "medium",
+                    "code": "STUB_ROUTE_HANDLER",
+                    "message": (
+                        "Stub route handlers detected: "
+                        "login_stub, register_stub, logout_stub"
+                    ),
+                }
+            ],
+            "dependency": {
+                "risk": {
+                    "level": "low",
+                    "score": 10,
+                },
+            },
+        }
+    )
+
+    selected = _select_files(
+        candidates,
+        max_files=10,
+    )
+
+    paths = [
+        item["path"]
+        for item in selected
+    ]
+
+    assert "backend/app/api/auth.py" in paths
+
+
+def test_select_files_preserves_semantic_warnings() -> None:
+    selected = _select_files(
+        [
+            {
+                "path": "backend/app/api/auth.py",
+                "role": "auth API routes",
+                "language": "python",
+                "score": 37,
+                "reasons": ["search-match"],
+                "warnings": [
+                    {
+                        "level": "medium",
+                        "code": "STUB_ROUTE_HANDLER",
+                        "message": (
+                            "Stub route handlers detected: "
+                            "login_stub, register_stub, logout_stub"
+                        ),
+                    }
+                ],
+                "dependency": {
+                    "risk": {
+                        "level": "low",
+                        "score": 10,
+                    },
+                },
+            }
+        ],
+        max_files=10,
+    )
+
+    assert len(selected) == 1
+
+    warnings = selected[0]["warnings"]
+
+    assert len(warnings) == 1
+    assert (
+        warnings[0]["code"]
+        == "STUB_ROUTE_HANDLER"
+    )

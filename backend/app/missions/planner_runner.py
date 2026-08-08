@@ -300,6 +300,32 @@ def _risk_weight(level: str | None) -> int:
     }.get(level or "", 0)
 
 
+def _semantic_warning_weight(
+    warnings: Any,
+) -> int:
+    weight = 0
+
+    for warning in warnings or []:
+        if not isinstance(warning, dict):
+            continue
+
+        level = str(
+            warning.get("level") or ""
+        ).strip().lower()
+
+        current = {
+            "high": 2,
+            "medium": 1,
+        }.get(level, 0)
+
+        weight = max(
+            weight,
+            current,
+        )
+
+    return weight
+
+
 def _select_files(
     candidates: list[dict[str, Any]],
     *,
@@ -382,6 +408,7 @@ def _select_files(
                             "or success criteria."
                         )
                     ],
+                    "warnings": [],
                 }
             )
 
@@ -448,11 +475,17 @@ def _select_files(
                     "reasons",
                     [],
                 ),
+                "warnings": list(
+                    item.get("warnings") or []
+                ),
             }
         )
 
     selected.sort(
         key=lambda item: (
+            -_semantic_warning_weight(
+                item.get("warnings")
+            ),
             -int(item.get("score", 0)),
             item["path"],
         )
