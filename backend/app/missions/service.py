@@ -425,6 +425,7 @@ def list_missions(
             "project_name": row["project_name"],
             "title": row["title"],
             "objective": row["objective"],
+            "mission_type": row["mission_type"],
             "status": row["status"],
             "progress": row["progress"],
             "next_action": row["next_action"],
