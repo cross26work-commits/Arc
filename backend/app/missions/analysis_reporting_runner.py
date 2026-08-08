@@ -82,6 +82,68 @@ def _extract_recommendations(
     analysis: dict[str, Any],
     planning: dict[str, Any],
 ) -> list[Any]:
+    recommendations: list[Any] = []
+
+    selected_files = _safe_list(
+        planning.get("selected_files")
+    )
+
+    for item in selected_files:
+        if not isinstance(item, dict):
+            continue
+
+        path = str(
+            item.get("path") or ""
+        ).strip()
+
+        if not path:
+            continue
+
+        warnings = _safe_list(
+            item.get("warnings")
+        )
+
+        for warning in warnings:
+            if not isinstance(warning, dict):
+                continue
+
+            level = str(
+                warning.get("level") or ""
+            ).strip().lower()
+
+            if level not in {
+                "high",
+                "medium",
+            }:
+                continue
+
+            code = str(
+                warning.get("code") or "WARNING"
+            ).strip()
+
+            message = str(
+                warning.get("message") or ""
+            ).strip()
+
+            title = (
+                f"{path} ? {code} ??????"
+            )
+
+            if message:
+                title += f": {message}"
+
+            recommendations.append(
+                {
+                    "title": title,
+                    "path": path,
+                    "code": code,
+                    "level": level,
+                    "message": message,
+                }
+            )
+
+    generic_recommendations: list[Any] = []
+
     for source, keys in (
         (
             planning,
@@ -101,14 +163,24 @@ def _extract_recommendations(
             ),
         ),
     ):
+        found = False
+
         for key in keys:
             value = source.get(key)
 
             if isinstance(value, list):
-                return value
+                generic_recommendations = value
+                found = True
+                break
 
-    return []
+        if found:
+            break
 
+    recommendations.extend(
+        generic_recommendations
+    )
+
+    return recommendations
 
 def _extract_risks(
     analysis: dict[str, Any],
