@@ -126,7 +126,7 @@ def _extract_recommendations(
             ).strip()
 
             title = (
-                f"{path} ? {code} ??????"
+                f"{path} の {code} を確認・解消"
             )
 
             if message:
