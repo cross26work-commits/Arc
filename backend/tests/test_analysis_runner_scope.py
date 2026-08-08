@@ -335,3 +335,142 @@ def test_analysis_ranking_keeps_service_layer_competitive() -> None:
     assert paths[0] == (
         "backend/app/services/revenue_service.py"
     )
+
+
+
+def _capture_search_budgets(
+    monkeypatch,
+    objective: str,
+) -> list[int]:
+    seen_limits: list[int] = []
+
+    mission: dict[str, Any] = {
+        "id": 999,
+        "project_id": 1,
+        "objective": objective,
+        "tasks": [
+            {
+                "id": 1001,
+                "task_type": "ANALYSIS",
+                "status": "RUNNING",
+            }
+        ],
+    }
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "get_mission",
+        lambda mission_id: mission,
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "_get_project",
+        lambda project_id: {
+            "id": project_id,
+            "name": "Test Project",
+            "path": "C:/fake-project",
+        },
+    )
+
+    def fake_search_project(
+        *,
+        project_id: int,
+        query: str,
+        max_results: int,
+    ) -> dict[str, Any]:
+        seen_limits.append(max_results)
+        return {"results": []}
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "search_project",
+        fake_search_project,
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "_rank_candidate_files",
+        lambda search_results, max_candidates=12: [
+            {
+                "path": "backend/app/main.py",
+                "score": 1,
+                "reasons": ["test"],
+            }
+        ],
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "_analyze_candidates",
+        lambda **kwargs: [
+            {
+                "path": "backend/app/main.py",
+                "score": 1,
+                "matched_query_count": 1,
+                "reasons": ["test"],
+                "role": "entrypoint",
+                "language": "python",
+                "metrics": {},
+                "routes": [],
+                "api_calls": [],
+                "sdk_calls": [],
+                "warnings": [],
+                "dependency": {
+                    "direct_dependencies": [],
+                    "direct_dependents": [],
+                    "affected_count": 0,
+                    "risk": None,
+                    "error": None,
+                },
+            }
+        ],
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "update_mission_task",
+        lambda **kwargs: mission,
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "add_mission_log",
+        lambda **kwargs: None,
+    )
+
+    analysis_runner._run_mission_analysis_impl(999)
+
+    return seen_limits
+
+
+def test_comprehensive_analysis_uses_deep_search_budget(
+    monkeypatch,
+) -> None:
+    limits = _capture_search_budgets(
+        monkeypatch,
+        COMPREHENSIVE_OBJECTIVE,
+    )
+
+    assert limits
+    assert all(
+        limit > 25
+        for limit in limits
+    )
+
+
+def test_focused_analysis_keeps_bounded_search_budget(
+    monkeypatch,
+) -> None:
+    objective = (
+        "\u30ed\u30b0\u30a4\u30f3\u8a8d\u8a3c"
+        "\u3060\u3051\u3092\u8abf\u67fb\u3059\u308b\u3002"
+    )
+
+    limits = _capture_search_budgets(
+        monkeypatch,
+        objective,
+    )
+
+    assert limits
+    assert set(limits) == {25}

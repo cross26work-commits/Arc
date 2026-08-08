@@ -140,6 +140,9 @@ COMPREHENSIVE_SEARCH_TERM_LIMIT = 24
 FOCUSED_CANDIDATE_LIMIT = 12
 COMPREHENSIVE_CANDIDATE_LIMIT = 36
 
+FOCUSED_SEARCH_RESULT_LIMIT = 25
+COMPREHENSIVE_SEARCH_RESULT_LIMIT = 100
+
 
 def _is_comprehensive_analysis(
     objective: str,
@@ -699,13 +702,19 @@ def _run_mission_analysis_impl(
         :search_term_limit
     ]
 
+    search_result_limit = (
+        COMPREHENSIVE_SEARCH_RESULT_LIMIT
+        if comprehensive_analysis
+        else FOCUSED_SEARCH_RESULT_LIMIT
+    )
+
     search_results: list[dict[str, Any]] = []
 
     for term in search_terms:
         project_search = search_project(
             project_id=mission["project_id"],
             query=term,
-            max_results=25,
+            max_results=search_result_limit,
         )
 
         for result in project_search["results"]:
