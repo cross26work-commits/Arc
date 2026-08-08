@@ -493,8 +493,177 @@ def _select_files(
 
     return selected[:max_files]
 
+def _build_read_only_design_context(
+    *,
+    selected_files: list[dict[str, Any]],
+    context_candidates: list[dict[str, Any]] | None,
+    max_items: int = 5,
+) -> str:
+    selected_paths = {
+        str(item.get("path") or "")
+        for item in selected_files
+    }
+
+    details: list[str] = []
+
+    for item in context_candidates or []:
+        if not isinstance(item, dict):
+            continue
+
+        path = str(
+            item.get("path") or ""
+        ).strip()
+
+        if (
+            not path
+            or path in selected_paths
+        ):
+            continue
+
+        signals: list[str] = []
+
+        for call in item.get("sdk_calls") or []:
+            if not isinstance(call, dict):
+                continue
+
+            sdk = str(
+                call.get("sdk") or ""
+            ).strip()
+
+            operation = str(
+                call.get("operation") or ""
+            ).strip()
+
+            if sdk and operation:
+                signals.append(
+                    f"{sdk}:{operation}"
+                )
+            elif sdk:
+                signals.append(sdk)
+            elif operation:
+                signals.append(operation)
+
+        for call in item.get("api_calls") or []:
+            if not isinstance(call, dict):
+                continue
+
+            method = str(
+                call.get("method") or ""
+            ).strip().upper()
+
+            url = str(
+                call.get("url") or ""
+            ).strip()
+
+            client = str(
+                call.get("client") or ""
+            ).strip()
+
+            if method and url:
+                signal = f"{method}:{url}"
+
+                if client:
+                    signal = (
+                        f"{client}:{signal}"
+                    )
+
+                signals.append(signal)
+
+        for warning in item.get("warnings") or []:
+            if not isinstance(warning, dict):
+                continue
+
+            code = str(
+                warning.get("code") or ""
+            ).strip()
+
+            if code:
+                signals.append(
+                    f"warning:{code}"
+                )
+
+        if not signals:
+            continue
+
+        details.append(
+            f"{path} ({', '.join(signals[:6])})"
+        )
+
+        if len(details) >= max_items:
+            break
+
+    return "; ".join(details)
+
+
+def _build_semantic_design_guidance(
+    *,
+    selected_files: list[dict[str, Any]],
+    context_candidates: list[dict[str, Any]] | None,
+) -> str:
+    selected_paths = {
+        str(item.get("path") or "")
+        for item in selected_files
+    }
+
+    warning_codes = {
+        str(warning.get("code") or "").strip()
+        for item in selected_files
+        for warning in (
+            item.get("warnings") or []
+        )
+        if isinstance(warning, dict)
+    }
+
+    context_items = [
+        item
+        for item in (
+            context_candidates or []
+        )
+        if (
+            isinstance(item, dict)
+            and str(item.get("path") or "")
+            not in selected_paths
+        )
+    ]
+
+    has_sdk_context = any(
+        item.get("sdk_calls")
+        for item in context_items
+    )
+
+    has_api_context = any(
+        item.get("api_calls")
+        for item in context_items
+    )
+
+    guidance: list[str] = []
+
+    if "STUB_ROUTE_HANDLER" in warning_codes:
+        guidance.append(
+            "Verify route callers before changing "
+            "or removing stub handlers."
+        )
+
+    if has_sdk_context:
+        guidance.append(
+            "Avoid duplicate functionality when an "
+            "existing SDK-backed implementation "
+            "already owns the behavior."
+        )
+
+    if has_api_context:
+        guidance.append(
+            "Preserve referenced API endpoints and "
+            "their compatibility."
+        )
+
+    return " ".join(guidance)
+
+
 def _build_workstreams(
     files: list[dict[str, Any]],
+    *,
+    context_candidates: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
@@ -521,6 +690,20 @@ def _build_workstreams(
         "OTHER": "その他",
     }
 
+    design_context = (
+        _build_read_only_design_context(
+            selected_files=files,
+            context_candidates=context_candidates,
+        )
+    )
+
+    semantic_guidance = (
+        _build_semantic_design_guidance(
+            selected_files=files,
+            context_candidates=context_candidates,
+        )
+    )
+
     workstreams: list[dict[str, Any]] = []
     position = 1
 
@@ -546,6 +729,20 @@ def _build_workstreams(
                 ),
             }
         )
+
+        if design_context:
+            workstreams[-1]["purpose"] = (
+                f'{workstreams[-1]["purpose"]} '
+                f"Read-only design context: "
+                f"{design_context}"
+            )
+
+        if semantic_guidance:
+            workstreams[-1]["purpose"] = (
+                f'{workstreams[-1]["purpose"]} '
+                f"Design guidance: "
+                f"{semantic_guidance}"
+            )
 
         position += 1
 
@@ -1585,7 +1782,8 @@ def _run_mission_planner_impl(
         explicit_paths=explicit_paths,
     )
     workstreams = _build_workstreams(
-        selected_files
+        selected_files,
+        context_candidates=candidates,
     )
     requirement = _load_requirement_contract(
         requirements_task

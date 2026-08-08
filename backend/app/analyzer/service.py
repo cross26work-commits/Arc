@@ -73,6 +73,18 @@ AXIOS_PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+API_WRAPPER_PATTERN = re.compile(
+    r"""
+    \b(apiGet|apiPost|apiPut|apiPatch|apiDelete)
+    \s*
+    (?:<[^>]+>)?
+    \s*\(\s*
+    [`"']([^`"']+)[`"']
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
 EXPRESS_ROUTE_PATTERN = re.compile(
     r"""
     \b(?:app|router)\.
@@ -525,6 +537,23 @@ def _analyze_javascript(content: str) -> dict[str, Any]:
             {
                 "client": "axios",
                 "method": match.group(1).upper(),
+                "url": match.group(2),
+                "line": _line_number_for_match(
+                    content,
+                    match.start(),
+                ),
+            }
+        )
+
+    for match in API_WRAPPER_PATTERN.finditer(content):
+        client = match.group(1)
+
+        method = client[3:].upper()
+
+        api_calls.append(
+            {
+                "client": client,
+                "method": method,
                 "url": match.group(2),
                 "line": _line_number_for_match(
                     content,
