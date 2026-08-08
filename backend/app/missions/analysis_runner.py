@@ -491,6 +491,46 @@ def _rank_candidate_files(
     return ranked[:max_candidates]
 
 
+
+def _semantic_route_warnings(
+    analysis: dict[str, Any],
+) -> list[dict[str, Any]]:
+    stub_handlers: list[str] = []
+
+    for route in analysis.get("routes") or []:
+        handler = str(
+            route.get("handler") or ""
+        ).strip()
+
+        lowered = handler.lower()
+
+        is_stub = (
+            lowered == "stub"
+            or lowered.startswith("stub_")
+            or lowered.endswith("_stub")
+        )
+
+        if (
+            is_stub
+            and handler not in stub_handlers
+        ):
+            stub_handlers.append(handler)
+
+    if not stub_handlers:
+        return []
+
+    return [
+        {
+            "level": "medium",
+            "code": "STUB_ROUTE_HANDLER",
+            "message": (
+                "Stub route handlers detected: "
+                + ", ".join(stub_handlers)
+            ),
+        }
+    ]
+
+
 def _analyze_candidates(
     *,
     project_path: str,
@@ -528,16 +568,30 @@ def _analyze_candidates(
                 "dependency_error": str(error),
             }
 
+        semantic_warnings = _semantic_route_warnings(
+            analysis
+        )
+
+        warnings = [
+            *(analysis.get("warnings") or []),
+            *semantic_warnings,
+        ]
+
+        metrics = dict(
+            analysis.get("metrics") or {}
+        )
+        metrics["warning_count"] = len(warnings)
+
         analyzed.append(
             {
                 **candidate,
                 "role": analysis["role"],
                 "language": analysis["language"],
-                "metrics": analysis["metrics"],
+                "metrics": metrics,
                 "routes": analysis["routes"][:10],
                 "api_calls": analysis["api_calls"][:10],
                 "sdk_calls": analysis["sdk_calls"][:10],
-                "warnings": analysis["warnings"][:10],
+                "warnings": warnings[:10],
                 "dependency": {
                     "direct_dependencies": dependency.get(
                         "direct_dependencies",

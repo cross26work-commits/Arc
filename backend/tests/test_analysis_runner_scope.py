@@ -474,3 +474,170 @@ def test_focused_analysis_keeps_bounded_search_budget(
 
     assert limits
     assert set(limits) == {25}
+
+
+
+def test_analyze_candidates_flags_stub_route_handlers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        analysis_runner,
+        "analyze_project_file",
+        lambda **kwargs: {
+            "role": "auth API routes",
+            "language": "python",
+            "metrics": {
+                "line_count": 35,
+                "warning_count": 0,
+            },
+            "routes": [
+                {
+                    "framework": "fastapi",
+                    "method": "GET",
+                    "path": "/me",
+                    "handler": "current_user",
+                    "line": 9,
+                },
+                {
+                    "framework": "fastapi",
+                    "method": "POST",
+                    "path": "/login",
+                    "handler": "login_stub",
+                    "line": 23,
+                },
+                {
+                    "framework": "fastapi",
+                    "method": "POST",
+                    "path": "/register",
+                    "handler": "register_stub",
+                    "line": 28,
+                },
+                {
+                    "framework": "fastapi",
+                    "method": "POST",
+                    "path": "/logout",
+                    "handler": "logout_stub",
+                    "line": 33,
+                },
+            ],
+            "api_calls": [],
+            "sdk_calls": [],
+            "warnings": [],
+        },
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "analyze_dependency_tree",
+        lambda **kwargs: {
+            "direct_dependencies": [],
+            "direct_dependents": [],
+            "summary": {
+                "affected_count": 0,
+            },
+            "risk": None,
+        },
+    )
+
+    analyzed = analysis_runner._analyze_candidates(
+        project_path="C:/fake-project",
+        candidates=[
+            {
+                "path": "backend/app/api/auth.py",
+                "score": 37,
+                "matched_query_count": 3,
+                "reasons": ["test"],
+            }
+        ],
+    )
+
+    assert len(analyzed) == 1
+
+    warnings = analyzed[0]["warnings"]
+
+    stub_warnings = [
+        warning
+        for warning in warnings
+        if warning.get("code")
+        == "STUB_ROUTE_HANDLER"
+    ]
+
+    assert len(stub_warnings) == 1
+
+    warning = stub_warnings[0]
+
+    assert warning["level"] in {
+        "medium",
+        "high",
+    }
+
+    assert "login_stub" in warning["message"]
+    assert "register_stub" in warning["message"]
+    assert "logout_stub" in warning["message"]
+
+
+def test_analyze_candidates_does_not_flag_normal_routes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        analysis_runner,
+        "analyze_project_file",
+        lambda **kwargs: {
+            "role": "results API routes",
+            "language": "python",
+            "metrics": {
+                "line_count": 78,
+                "warning_count": 0,
+            },
+            "routes": [
+                {
+                    "framework": "fastapi",
+                    "method": "GET",
+                    "path": "/summary",
+                    "handler": "results_summary",
+                    "line": 16,
+                },
+                {
+                    "framework": "fastapi",
+                    "method": "GET",
+                    "path": "/insights",
+                    "handler": "results_insights",
+                    "line": 48,
+                },
+            ],
+            "api_calls": [],
+            "sdk_calls": [],
+            "warnings": [],
+        },
+    )
+
+    monkeypatch.setattr(
+        analysis_runner,
+        "analyze_dependency_tree",
+        lambda **kwargs: {
+            "direct_dependencies": [],
+            "direct_dependents": [],
+            "summary": {
+                "affected_count": 0,
+            },
+            "risk": None,
+        },
+    )
+
+    analyzed = analysis_runner._analyze_candidates(
+        project_path="C:/fake-project",
+        candidates=[
+            {
+                "path": "backend/app/api/results.py",
+                "score": 34,
+                "matched_query_count": 3,
+                "reasons": ["test"],
+            }
+        ],
+    )
+
+    assert not any(
+        warning.get("code")
+        == "STUB_ROUTE_HANDLER"
+        for warning in analyzed[0]["warnings"]
+    )
