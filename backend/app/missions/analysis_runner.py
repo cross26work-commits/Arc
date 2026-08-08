@@ -408,6 +408,67 @@ def _rank_candidate_files(
             score += 3
             reasons[path].add("テスト関連")
 
+        is_documentation = (
+            lowered.startswith("docs/")
+            or "/docs/" in lowered
+            or lowered.endswith((".md", ".rst"))
+        )
+
+        is_lockfile = lowered.endswith(
+            (
+                "package-lock.json",
+                "yarn.lock",
+                "pnpm-lock.yaml",
+                "poetry.lock",
+            )
+        )
+
+        is_generated_file = lowered.endswith(
+            (
+                "next-env.d.ts",
+            )
+        )
+
+        is_runtime_source = (
+            lowered.endswith(
+                (
+                    ".py",
+                    ".ts",
+                    ".tsx",
+                    ".js",
+                    ".jsx",
+                    ".sql",
+                )
+            )
+            and not is_documentation
+            and not is_lockfile
+            and not is_generated_file
+        )
+
+        if is_runtime_source:
+            score += 12
+            reasons[path].add(
+                "runtime-source"
+            )
+
+        if is_documentation:
+            score -= 12
+            reasons[path].add(
+                "supporting-document"
+            )
+
+        if is_lockfile:
+            score -= 24
+            reasons[path].add(
+                "lockfile"
+            )
+
+        if is_generated_file:
+            score -= 12
+            reasons[path].add(
+                "generated-file"
+            )
+
         ranked.append(
             {
                 "path": path,

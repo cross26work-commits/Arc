@@ -204,3 +204,134 @@ def test_focused_analysis_stays_focused() -> None:
     assert "dashboard" not in token_set
     assert "health" not in token_set
     assert "test" not in token_set
+
+
+
+def test_analysis_ranking_prefers_runtime_code_over_docs() -> None:
+    search_results = []
+
+    for query in [
+        "api",
+        "auth",
+        "gmail",
+        "settings",
+        "config",
+    ]:
+        search_results.append(
+            {
+                "path": "docs/API_DESIGN.md",
+                "query": query,
+                "symbol_name": None,
+            }
+        )
+
+    for query in [
+        "auth",
+        "api",
+    ]:
+        search_results.append(
+            {
+                "path": "backend/app/api/auth.py",
+                "query": query,
+                "symbol_name": None,
+            }
+        )
+
+    ranked = analysis_runner._rank_candidate_files(
+        search_results,
+        max_candidates=2,
+    )
+
+    paths = [
+        item["path"]
+        for item in ranked
+    ]
+
+    assert paths[0] == "backend/app/api/auth.py"
+
+
+def test_analysis_ranking_penalizes_lockfiles() -> None:
+    search_results = []
+
+    for query in [
+        "api",
+        "auth",
+        "config",
+        "git",
+        "main",
+    ]:
+        search_results.append(
+            {
+                "path": "frontend/package-lock.json",
+                "query": query,
+                "symbol_name": None,
+            }
+        )
+
+    for query in [
+        "results",
+        "revenue",
+    ]:
+        search_results.append(
+            {
+                "path": "backend/app/api/results.py",
+                "query": query,
+                "symbol_name": None,
+            }
+        )
+
+    ranked = analysis_runner._rank_candidate_files(
+        search_results,
+        max_candidates=2,
+    )
+
+    paths = [
+        item["path"]
+        for item in ranked
+    ]
+
+    assert paths[0] == "backend/app/api/results.py"
+
+
+def test_analysis_ranking_keeps_service_layer_competitive() -> None:
+    search_results = []
+
+    for query in [
+        "api",
+        "database",
+        "config",
+        "main",
+    ]:
+        search_results.append(
+            {
+                "path": "docs/APP_MIGRATION_MAP.md",
+                "query": query,
+                "symbol_name": None,
+            }
+        )
+
+    for query in [
+        "revenue",
+        "service",
+    ]:
+        search_results.append(
+            {
+                "path": "backend/app/services/revenue_service.py",
+                "query": query,
+                "symbol_name": None,
+            }
+        )
+
+    ranked = analysis_runner._rank_candidate_files(
+        search_results,
+        max_candidates=2,
+    )
+
+    paths = [
+        item["path"]
+        for item in ranked
+    ]
+
+    assert paths[0] == (
+        "backend/app/services/revenue_service.py"
+    )
