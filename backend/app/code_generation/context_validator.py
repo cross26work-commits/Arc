@@ -147,6 +147,15 @@ def _extract_source(
     )
 
 
+def _normalize_match_text(
+    value: str,
+) -> str:
+    return (
+        value
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
 def _validate_context_identity(
     *,
     contract: CodeGenerationContract,
@@ -239,8 +248,12 @@ def validate_contract_against_context(
         if edit.operation == "REPLACE_UNIQUE":
             assert edit.old_text is not None
 
-            occurrence_count = source.count(
-                edit.old_text
+            occurrence_count = (
+                _normalize_match_text(source).count(
+                    _normalize_match_text(
+                        edit.old_text
+                    )
+                )
             )
 
             check["match_type"] = "old_text"
@@ -268,8 +281,12 @@ def validate_contract_against_context(
         }:
             assert edit.anchor is not None
 
-            occurrence_count = source.count(
-                edit.anchor
+            occurrence_count = (
+                _normalize_match_text(source).count(
+                    _normalize_match_text(
+                        edit.anchor
+                    )
+                )
             )
 
             check["match_type"] = "anchor"

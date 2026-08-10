@@ -466,3 +466,58 @@ def test_rejects_nested_source_without_content() -> None:
 
     assert result["valid"] is False
     assert "ソース本文" in result["error"]
+
+def test_replace_unique_accepts_lf_old_text_against_crlf_context_source() -> None:
+    context = context_payload()
+
+    source = context["files"][0]["content"]
+    context["files"][0]["content"] = source.replace(
+        "\n",
+        "\r\n",
+    )
+
+    result = validate_payload_against_context(
+        payload=contract_payload(),
+        context=context,
+    )
+
+    assert result["valid"] is True
+    assert result["checks"][0]["match_type"] == "old_text"
+    assert result["checks"][0]["occurrence_count"] == 1
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "INSERT_BEFORE",
+        "INSERT_AFTER",
+    ],
+)
+def test_insert_anchor_accepts_lf_anchor_against_crlf_context_source(
+    operation: str,
+) -> None:
+    context = context_payload()
+
+    source = context["files"][0]["content"]
+    context["files"][0]["content"] = source.replace(
+        "\n",
+        "\r\n",
+    )
+
+    payload = contract_payload()
+    payload["edits"] = [
+        {
+            "operation": operation,
+            "path": "backend/app/api/auth.py",
+            "anchor": "router = APIRouter()\n",
+            "text": "# inserted\n",
+        }
+    ]
+
+    result = validate_payload_against_context(
+        payload=payload,
+        context=context,
+    )
+
+    assert result["valid"] is True
+    assert result["checks"][0]["match_type"] == "anchor"
+    assert result["checks"][0]["occurrence_count"] == 1
