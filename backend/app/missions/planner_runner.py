@@ -833,6 +833,124 @@ def _build_verification_commands(
     return commands
 
 
+def _requirement_requires_test_mutation(
+    requirement: RequirementAnalyzerResult,
+) -> bool:
+    texts = [
+        requirement.objective,
+        *requirement.requirements,
+        *requirement.success_criteria,
+    ]
+
+    mutation_phrases = (
+        "add test",
+        "add tests",
+        "add regression test",
+        "add regression tests",
+        "add focused regression test",
+        "add focused regression tests",
+        "add or update test",
+        "add or update tests",
+        "add or update regression test",
+        "add or update regression tests",
+        "add or update focused regression test",
+        "add or update focused regression tests",
+        "create test",
+        "create tests",
+        "create regression test",
+        "create regression tests",
+        "write test",
+        "write tests",
+        "write regression test",
+        "write regression tests",
+        "update test",
+        "update tests",
+        "update regression test",
+        "update regression tests",
+        "modify test",
+        "modify tests",
+        "\u30c6\u30b9\u30c8\u3092\u8ffd\u52a0",
+        "\u30c6\u30b9\u30c8\u3092\u4f5c\u6210",
+        "\u30c6\u30b9\u30c8\u3092\u66f4\u65b0",
+        "\u30c6\u30b9\u30c8\u3092\u5909\u66f4",
+        "\u56de\u5e30\u30c6\u30b9\u30c8\u3092\u8ffd\u52a0",
+        "\u56de\u5e30\u30c6\u30b9\u30c8\u3092\u4f5c\u6210",
+        "\u56de\u5e30\u30c6\u30b9\u30c8\u3092\u66f4\u65b0",
+    )
+
+    negated_phrases = (
+        "do not add test",
+        "do not add tests",
+        "do not create test",
+        "do not create tests",
+        "do not update test",
+        "do not update tests",
+        "do not write test",
+        "do not write tests",
+        "must not add test",
+        "must not add tests",
+        "must not create test",
+        "must not create tests",
+        "must not update test",
+        "must not update tests",
+        "must not write test",
+        "must not write tests",
+        "\u30c6\u30b9\u30c8\u3092\u8ffd\u52a0\u3057\u306a\u3044",
+        "\u30c6\u30b9\u30c8\u3092\u4f5c\u6210\u3057\u306a\u3044",
+        "\u30c6\u30b9\u30c8\u3092\u66f4\u65b0\u3057\u306a\u3044",
+        "\u30c6\u30b9\u30c8\u3092\u5909\u66f4\u3057\u306a\u3044",
+    )
+
+    for value in texts:
+        normalized = " ".join(
+            str(value or "").lower().split()
+        )
+
+        if not normalized:
+            continue
+
+        if any(
+            phrase in normalized
+            for phrase in negated_phrases
+        ):
+            continue
+
+        if any(
+            phrase in normalized
+            for phrase in mutation_phrases
+        ):
+            return True
+
+    return False
+
+
+def _validate_required_mutation_scope(
+    *,
+    selected_files: list[dict[str, Any]],
+    requirement: RequirementAnalyzerResult,
+) -> None:
+    if not _requirement_requires_test_mutation(
+        requirement
+    ):
+        return
+
+    has_test_target = any(
+        str(
+            item.get("category") or ""
+        ).strip().upper()
+        == "TEST"
+        for item in selected_files
+    )
+
+    if has_test_target:
+        return
+
+    raise MissionPlannerError(
+        "Requirement requires a TEST mutation, "
+        "but selected files contain no TEST target."
+    )
+
+
 def _calculate_plan_risk(
     files: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1421,6 +1539,11 @@ def _build_typed_implementation_plan(
     effort: dict[str, Any],
     approval_summary: str,
 ) -> ImplementationPlan:
+    _validate_required_mutation_scope(
+        selected_files=selected_files,
+        requirement=requirement,
+    )
+
     project_path = _get_project_path(
         mission["project_id"]
     )

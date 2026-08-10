@@ -317,6 +317,17 @@ def _tokenize_objective(objective: str) -> list[str]:
 
     priority_tokens: list[str] = []
 
+    if any(
+        token in {
+            "test",
+            "tests",
+            "pytest",
+            "regression",
+        }
+        for token in focused_tokens
+    ):
+        priority_tokens.append("test")
+
     for token in focused_tokens:
         priority_tokens.extend(
             FOCUSED_SEARCH_ALIASES.get(

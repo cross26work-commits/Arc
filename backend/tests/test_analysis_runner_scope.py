@@ -694,3 +694,35 @@ def test_focused_analysis_does_not_spend_budget_on_common_words() -> None:
         "before",
     ):
         assert word not in focused
+
+
+def test_focused_analysis_preserves_explicit_regression_test_signal() -> None:
+    from app.missions.analysis_runner import (
+        _tokenize_objective,
+    )
+
+    objective = (
+        "Resolve the production-readiness issue in authentication. "
+        "Inspect the actual frontend and backend authentication flow "
+        "before changing code. "
+        "The backend file backend/app/api/auth.py currently exposes "
+        "login_stub, register_stub, and logout_stub, "
+        "while the frontend uses Supabase authentication. "
+        "Determine from the existing code whether these backend "
+        "endpoints are required. "
+        "Preserve existing API compatibility. "
+        "Add or update focused regression tests for the chosen behavior."
+    )
+
+    terms = _tokenize_objective(
+        objective
+    )
+
+    assert any(
+        marker in terms
+        for marker in (
+            "test",
+            "tests",
+            "regression",
+        )
+    )
