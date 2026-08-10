@@ -924,6 +924,215 @@ def _requirement_requires_test_mutation(
     return False
 
 
+def _derive_test_mutation_target(
+    *,
+    project_path: str,
+    selected_files: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    from pathlib import Path
+
+    backend_targets = [
+        item
+        for item in selected_files
+        if str(
+            item.get("category") or ""
+        ).strip().upper()
+        == "BACKEND"
+        and str(
+            item.get("language") or ""
+        ).strip().lower()
+        == "python"
+        and str(
+            item.get("path") or ""
+        ).replace("\\", "/").startswith(
+            "backend/"
+        )
+    ]
+
+    if len(backend_targets) != 1:
+        return None
+
+    project_root = Path(project_path)
+    requirements_path = (
+        project_root
+        / "backend"
+        / "requirements.txt"
+    )
+
+    if not requirements_path.is_file():
+        return None
+
+    requirements_text = requirements_path.read_text(
+        encoding="utf-8",
+    )
+
+    pytest_declared = False
+
+    for raw_line in requirements_text.splitlines():
+        line = raw_line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        requirement_part = line.split(
+            "#",
+            1,
+        )[0].strip()
+
+        package_name = requirement_part
+
+        for separator in (
+            "==",
+            ">=",
+            "<=",
+            "~=",
+            "!=",
+            ">",
+            "<",
+        ):
+            package_name = package_name.split(
+                separator,
+                1,
+            )[0].strip()
+
+        if package_name.lower() == "pytest":
+            pytest_declared = True
+            break
+
+    if not pytest_declared:
+        return None
+
+    source_path = str(
+        backend_targets[0].get("path") or ""
+    ).replace("\\", "/")
+
+    source_name = Path(source_path).stem
+
+    if not source_name:
+        return None
+
+    normalized_source_path = (
+        source_path.replace("\\", "/")
+    )
+
+    source_relative = normalized_source_path
+
+    if source_relative.startswith(
+        "backend/app/"
+    ):
+        source_relative = source_relative[
+            len("backend/app/"):
+        ]
+
+    source_relative_path = Path(
+        source_relative
+    )
+
+    source_parent = source_relative_path.parent
+
+    default_test_directory = (
+        project_root
+        / "backend"
+        / "tests"
+    )
+
+    conventional_test_directory = (
+        default_test_directory
+        / source_parent
+    )
+
+    use_conventional_directory = False
+
+    if (
+        source_parent != Path(".")
+        and conventional_test_directory.is_dir()
+    ):
+        use_conventional_directory = any(
+            candidate.is_file()
+            and candidate.name.startswith("test_")
+            and candidate.suffix == ".py"
+            for candidate
+            in conventional_test_directory.iterdir()
+        )
+
+    if use_conventional_directory:
+        test_relative_directory = (
+            Path("backend")
+            / "tests"
+            / source_parent
+        )
+    else:
+        test_relative_directory = (
+            Path("backend")
+            / "tests"
+        )
+
+    test_path = (
+        test_relative_directory
+        / f"test_{source_name}.py"
+    ).as_posix()
+
+    return {
+        "path": test_path,
+        "role": "pytest regression test",
+        "language": "python",
+        "score": 1000,
+        "category": "TEST",
+        "risk_level": "low",
+        "risk_score": 5,
+        "direct_dependencies": [
+            source_path,
+        ],
+        "direct_dependents": [],
+        "affected_count": 0,
+        "reasons": [
+            (
+                "Derived from explicit pytest "
+                "project dependency and backend "
+                "mutation target."
+            ),
+        ],
+        "warnings": [],
+        "dependency": {},
+    }
+
+
+def _augment_required_test_mutation_target(
+    *,
+    project_path: str,
+    selected_files: list[dict[str, Any]],
+    requirement: RequirementAnalyzerResult,
+) -> list[dict[str, Any]]:
+    if not _requirement_requires_test_mutation(
+        requirement
+    ):
+        return list(selected_files)
+
+    has_test_target = any(
+        str(
+            item.get("category") or ""
+        ).strip().upper()
+        == "TEST"
+        for item in selected_files
+    )
+
+    if has_test_target:
+        return list(selected_files)
+
+    derived_target = _derive_test_mutation_target(
+        project_path=project_path,
+        selected_files=selected_files,
+    )
+
+    if derived_target is None:
+        return list(selected_files)
+
+    return [
+        *selected_files,
+        derived_target,
+    ]
+
+
 def _validate_required_mutation_scope(
     *,
     selected_files: list[dict[str, Any]],
@@ -1895,6 +2104,10 @@ def _run_mission_planner_impl(
             "計画へ使用できる候補ファイルがありません。"
         )
 
+    requirement = _load_requirement_contract(
+        requirements_task
+    )
+
     explicit_paths = _extract_explicit_paths(
         mission.get("objective"),
         mission.get("success_criteria"),
@@ -1904,12 +2117,27 @@ def _run_mission_planner_impl(
         candidates,
         explicit_paths=explicit_paths,
     )
+
+    project_path = _get_project_path(
+        mission["project_id"]
+    )
+
+    selected_files = (
+        _augment_required_test_mutation_target(
+            project_path=project_path,
+            selected_files=selected_files,
+            requirement=requirement,
+        )
+    )
+
+    _validate_required_mutation_scope(
+        selected_files=selected_files,
+        requirement=requirement,
+    )
+
     workstreams = _build_workstreams(
         selected_files,
         context_candidates=candidates,
-    )
-    requirement = _load_requirement_contract(
-        requirements_task
     )
 
     verification = _build_verification_commands(
